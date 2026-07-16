@@ -46,14 +46,15 @@ flowchart LR
 
 Python 3.10 or newer is required.
 
-Install directly from the private repository after replacing the organization name:
+Install the published package from PyPI:
 
 ```bash
-pip install "jobstream @ git+ssh://git@github.com/YOUR_ORG/JobStream.git"
+pip install -U jobstream
 ```
 
 The distribution is `jobstream` and the Python package is `jobstream`. No legacy
-import alias is included. Public PyPI publishing is intentionally not configured.
+import alias is included. The source repository remains private; PyPI releases are
+performed explicitly from verified distribution artifacts.
 
 ## Stream results immediately
 
