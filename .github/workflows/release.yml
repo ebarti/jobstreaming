@@ -1,0 +1,48 @@
+name: Private release artifact
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Poetry
+        run: python -m pip install poetry==2.4.1
+
+      - name: Install and verify project
+        run: |
+          poetry install --no-interaction
+          poetry check --lock
+          poetry run pytest
+          poetry run ruff check jobstream tests
+          poetry run black --check jobstream tests
+
+      - name: Verify tag matches package version
+        run: test "${GITHUB_REF_NAME#v}" = "$(poetry version --short)"
+
+      - name: Build distributions
+        run: poetry build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: jobstream-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
