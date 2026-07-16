@@ -49,12 +49,12 @@ Python 3.10 or newer is required.
 Install the published package from PyPI:
 
 ```bash
-pip install -U jobstream
+pip install -U jobctrl-jobstream
 ```
 
-The distribution is `jobstream` and the Python package is `jobstream`. No legacy
-import alias is included. The source repository remains private; PyPI releases are
-performed explicitly from verified distribution artifacts.
+The PyPI distribution is `jobctrl-jobstream`; the Python package remains `jobstream`.
+No legacy import alias is included. The source repository remains private; PyPI
+releases are performed explicitly from verified distribution artifacts.
 
 ## Stream results immediately
 

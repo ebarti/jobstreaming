@@ -42,7 +42,7 @@ jobs:
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: jobstream-${{ github.ref_name }}
+          name: jobctrl-jobstream-${{ github.ref_name }}
           path: dist/
           if-no-files-found: error
           retention-days: 14
