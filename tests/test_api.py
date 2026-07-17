@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from jobstream import (
+from jobstreaming import (
     AdapterRegistry,
     Compensation,
     CompensationInterval,
@@ -14,7 +14,7 @@ from jobstream import (
     scrape_jobs,
     stream_jobs,
 )
-from jobstream.util import desired_order
+from jobstreaming.util import desired_order
 
 
 class _WorkingAdapter(Scraper):

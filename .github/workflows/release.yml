@@ -30,8 +30,8 @@ jobs:
           poetry install --no-interaction
           poetry check --lock
           poetry run pytest
-          poetry run ruff check jobstream tests
-          poetry run black --check jobstream tests
+          poetry run ruff check jobstreaming tests
+          poetry run black --check jobstreaming tests
 
       - name: Verify tag matches package version
         run: test "${GITHUB_REF_NAME#v}" = "$(poetry version --short)"
@@ -42,7 +42,7 @@ jobs:
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: jobctrl-jobstream-${{ github.ref_name }}
+          name: jobstreaming-${{ github.ref_name }}
           path: dist/
           if-no-files-found: error
           retention-days: 14

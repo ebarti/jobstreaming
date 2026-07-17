@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from jobstream import CompensationInterval
-from jobstream.google.util import parse_relative_date
-from jobstream.util import (
+from jobstreaming import CompensationInterval
+from jobstreaming.google.util import parse_relative_date
+from jobstreaming.util import (
     create_logger,
     extract_salary,
     set_logger_level,

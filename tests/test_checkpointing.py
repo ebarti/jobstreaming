@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from jobstream import (
+from jobstreaming import (
     AdapterRegistry,
     CheckpointMismatchError,
     JobEvent,

@@ -1,6 +1,6 @@
-# JobStream
+# JobStreaming
 
-JobStream is the concurrent, restartable job-collection library for JobCtrl. Its
+JobStreaming is the concurrent, restartable job-collection library for JobCtrl. Its
 primary API yields each job as soon as its adapter produces it, while retaining a
 convenient DataFrame batch API.
 
@@ -49,24 +49,24 @@ Python 3.10 or newer is required.
 Install the published package from PyPI:
 
 ```bash
-pip install -U jobctrl-jobstream
+pip install -U jobstreaming
 ```
 
-The PyPI distribution is `jobctrl-jobstream`; the Python package remains `jobstream`.
-No legacy import alias is included. The source repository remains private; PyPI
-releases are performed explicitly from verified distribution artifacts.
+Both the PyPI distribution and Python import package are `jobstreaming`. No legacy
+import alias is included. The source repository remains private; PyPI releases are
+performed explicitly from verified distribution artifacts.
 
 ## Stream results immediately
 
 ```python
-from jobstream import ErrorEvent, JobEvent, SearchCompleteEvent, stream_search
+from jobstreaming import ErrorEvent, JobEvent, SearchCompleteEvent, stream_search
 
 with stream_search(
     site_name=["indeed", "linkedin", "zip_recruiter"],
     search_term="software engineer",
     location="Madrid",
     results_wanted=20,  # per site
-    checkpoint_path=".jobstream/search.json",
+    checkpoint_path=".jobstreaming/search.json",
     resume=True,
 ) as stream:
     for event in stream:
@@ -90,7 +90,7 @@ sites and faster pages yield first.
 For a job-only iterator:
 
 ```python
-from jobstream import stream_jobs
+from jobstreaming import stream_jobs
 
 for job in stream_jobs(
     site_name=["indeed", "google"],
@@ -134,7 +134,7 @@ idempotent using `event.job_key` or the job's stable `id`.
 ## Compatible batch API
 
 ```python
-from jobstream import scrape_jobs
+from jobstreaming import scrape_jobs
 
 jobs = scrape_jobs(
     site_name=["indeed", "linkedin", "zip_recruiter", "google"],
@@ -193,7 +193,7 @@ the filter was applied.
 For reusable searches, construct an immutable request explicitly:
 
 ```python
-from jobstream import Country, SearchRequest, Site, stream_search
+from jobstreaming import Country, SearchRequest, Site, stream_search
 
 request = SearchRequest(
     site_type=(Site.INDEED, Site.LINKEDIN),
@@ -216,7 +216,7 @@ job titles/URLs, and unsupported enum values are rejected at the boundary.
 ## Custom adapters
 
 ```python
-from jobstream import AdapterRegistry, JobResponse, Scraper, Site, stream_search
+from jobstreaming import AdapterRegistry, JobResponse, Scraper, Site, stream_search
 
 class InternalJobs(Scraper):
     def __init__(self, **kwargs):
@@ -251,8 +251,8 @@ fingerprinting, events, and checkpoints.
 ```bash
 poetry install
 poetry run pytest
-poetry run ruff check jobstream tests
-poetry run black --check jobstream tests
+poetry run ruff check jobstreaming tests
+poetry run black --check jobstreaming tests
 poetry build
 ```
 

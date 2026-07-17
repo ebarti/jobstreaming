@@ -42,10 +42,10 @@ jobs:
         run: poetry run pytest
 
       - name: Run Ruff
-        run: poetry run ruff check jobstream tests
+        run: poetry run ruff check jobstreaming tests
 
       - name: Check formatting
-        run: poetry run black --check jobstream tests
+        run: poetry run black --check jobstreaming tests
 
   build:
     needs: test

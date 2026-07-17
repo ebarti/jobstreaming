@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from bs4 import BeautifulSoup
 
-from jobstream import (
+from jobstreaming import (
     AdapterRegistry,
     CompensationInterval,
     Country,
@@ -16,15 +16,17 @@ from jobstream import (
     Site,
     stream_search,
 )
-from jobstream.bayt import BaytScraper
-from jobstream.bdjobs.util import parse_location as parse_bdjobs_location
-from jobstream.glassdoor import Glassdoor
-from jobstream.glassdoor.util import parse_compensation as parse_glassdoor_compensation
-from jobstream.google import Google
-from jobstream.indeed.util import get_compensation as parse_indeed_compensation
-from jobstream.linkedin import LinkedIn
-from jobstream.naukri import Naukri
-from jobstream.ziprecruiter import ZipRecruiter
+from jobstreaming.bayt import BaytScraper
+from jobstreaming.bdjobs.util import parse_location as parse_bdjobs_location
+from jobstreaming.glassdoor import Glassdoor
+from jobstreaming.glassdoor.util import (
+    parse_compensation as parse_glassdoor_compensation,
+)
+from jobstreaming.google import Google
+from jobstreaming.indeed.util import get_compensation as parse_indeed_compensation
+from jobstreaming.linkedin import LinkedIn
+from jobstreaming.naukri import Naukri
+from jobstreaming.ziprecruiter import ZipRecruiter
 
 
 def test_glassdoor_accepts_a_one_sided_salary_range() -> None:

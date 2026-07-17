@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from threading import Event
 
-from jobstream import (
+from jobstreaming import (
     AdapterRegistry,
     ErrorEvent,
     JobEvent,

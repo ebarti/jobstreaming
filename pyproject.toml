@@ -3,10 +3,10 @@ requires = ["poetry-core>=2.0"]
 build-backend = "poetry.core.masonry.api"
 
 [project]
-name = "jobctrl-jobstream"
-version = "2.0.0a1"
+name = "jobstreaming"
+version = "0.0.1"
 description = "Concurrent, resumable job search streams with a DataFrame batch API"
-authors = [{ name = "JobStream contributors" }]
+authors = [{ name = "JobStreaming contributors" }]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
@@ -37,7 +37,7 @@ classifiers = [
 
 [tool.poetry]
 [[tool.poetry.packages]]
-include = "jobstream"
+include = "jobstreaming"
 
 [tool.black]
 line-length = 88

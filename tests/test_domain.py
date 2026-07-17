@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from jobstream import (
+from jobstreaming import (
     Compensation,
     CompensationInterval,
     JobPost,
