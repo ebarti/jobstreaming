@@ -3,18 +3,23 @@ from __future__ import annotations
 import inspect
 import queue
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from functools import partial
+from typing import Any, TypeVar, cast
 
 from jobstreaming.checkpoint import (
+    CheckpointCompatibilityError,
+    CheckpointConflictError,
     CheckpointMismatchError,
     CheckpointStore,
     MemoryCheckpointStore,
 )
 from jobstreaming.events import (
+    CHECKPOINT_VERSION,
     AdapterCheckpoint,
     ErrorEvent,
     JobEvent,
@@ -26,6 +31,12 @@ from jobstreaming.events import (
     WarningEvent,
     freeze_state,
     thaw_state,
+)
+from jobstreaming.exception import (
+    ErrorCode,
+    StreamCancelledError,
+    UnacknowledgedEventError,
+    classify_exception,
 )
 from jobstreaming.model import JobPost, SearchRequest, Site
 from jobstreaming.registry import AdapterRegistry
@@ -42,6 +53,11 @@ class _MessageType(str, Enum):
     WORKER_DONE = "worker_done"
 
 
+class AckMode(str, Enum):
+    IMPLICIT = "implicit"
+    EXPLICIT = "explicit"
+
+
 @dataclass(frozen=True, slots=True)
 class _AdapterMessage:
     type: _MessageType
@@ -51,11 +67,56 @@ class _AdapterMessage:
     job_key: str | None = None
     message: str | None = None
     error_type: str | None = None
-    recoverable: bool = True
+    error_code: ErrorCode = ErrorCode.ADAPTER_FAILURE
+    retryable: bool = False
+    reset_checkpoint: bool = False
     emitted_count: int = 0
 
 
 MessageSink = Callable[[_AdapterMessage], bool]
+CancellationCallback = Callable[[], bool]
+_Result = TypeVar("_Result")
+_WAKE = object()
+
+
+class _CancellationController:
+    """Combines stream close, a caller event, and a caller callback."""
+
+    def __init__(
+        self,
+        *,
+        stop_event: threading.Event | None = None,
+        cancel_event: threading.Event | None = None,
+        cancel_callback: CancellationCallback | None = None,
+    ) -> None:
+        self._stop_event = stop_event or threading.Event()
+        self._cancel_event = cancel_event
+        self._cancel_callback = cancel_callback
+
+    @property
+    def externally_cancelled(self) -> bool:
+        return bool(
+            (self._cancel_event is not None and self._cancel_event.is_set())
+            or (self._cancel_callback is not None and self._cancel_callback())
+        )
+
+    @property
+    def cancelled(self) -> bool:
+        return self._stop_event.is_set() or self.externally_cancelled
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def wait(self, seconds: float) -> bool:
+        """Return true if cancellation occurs before the timeout."""
+
+        deadline = time.monotonic() + max(0, seconds)
+        while not self.cancelled:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self._stop_event.wait(min(remaining, 0.05))
+        return True
 
 
 class ScrapeContext:
@@ -69,11 +130,18 @@ class ScrapeContext:
         checkpoint: AdapterCheckpoint | None = None,
         sink: MessageSink | None = None,
         stop_event: threading.Event | None = None,
+        cancel_event: threading.Event | None = None,
+        cancel_callback: CancellationCallback | None = None,
+        cancellation: _CancellationController | None = None,
     ) -> None:
         self.site = site
         self.request = request
         self._sink = sink
-        self._stop_event = stop_event or threading.Event()
+        self._cancellation = cancellation or _CancellationController(
+            stop_event=stop_event,
+            cancel_event=cancel_event,
+            cancel_callback=cancel_callback,
+        )
         self._state = thaw_state(freeze_state(checkpoint.state)) if checkpoint else {}
         self._seen = set(checkpoint.seen_job_keys) if checkpoint else set()
         self._lock = threading.Lock()
@@ -104,7 +172,7 @@ class ScrapeContext:
 
     @property
     def cancelled(self) -> bool:
-        return self._stop_event.is_set()
+        return self._cancellation.cancelled
 
     @property
     def should_continue(self) -> bool:
@@ -114,7 +182,34 @@ class ScrapeContext:
         """Wait between requests, waking immediately when the stream is closed."""
         if seconds <= 0:
             return self.should_continue
-        return not self._stop_event.wait(seconds) and self.should_continue
+        return not self._cancellation.wait(seconds) and self.should_continue
+
+    def run_interruptibly(self, operation: Callable[[], _Result]) -> _Result:
+        """Run a potentially blocking adapter operation behind cancellation."""
+
+        completed: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+        def invoke() -> None:
+            try:
+                completed.put((True, operation()))
+            except BaseException as exc:
+                completed.put((False, exc))
+
+        thread = threading.Thread(
+            target=invoke,
+            name=f"jobstreaming-network-{self.site.value}",
+            daemon=True,
+        )
+        thread.start()
+        while not self.cancelled:
+            try:
+                succeeded, result = completed.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if succeeded:
+                return cast(_Result, result)
+            raise cast(BaseException, result)
+        raise StreamCancelledError("Search stream was cancelled")
 
     def already_seen(self, job: JobPost) -> bool:
         key = stable_job_key(self.site.value, job.id or job.job_url)
@@ -190,9 +285,8 @@ class SearchStream(Iterator[SearchEvent]):
     """
     Concurrent, acknowledged event stream.
 
-    Requesting the next event implicitly acknowledges the previous event. A crash
-    while handling an event therefore replays that event after restart instead of
-    silently losing it. Call ``ack`` explicitly before intentionally stopping.
+    In implicit mode, requesting the next event acknowledges the previous event.
+    Explicit mode refuses another delivery until ``ack`` persists the current event.
     """
 
     def __init__(
@@ -208,6 +302,9 @@ class SearchStream(Iterator[SearchEvent]):
         queue_size: int = 128,
         max_retries: int = 1,
         retry_backoff: float = 0.5,
+        ack_mode: str | AckMode = AckMode.IMPLICIT,
+        cancel_event: threading.Event | None = None,
+        cancel_callback: CancellationCallback | None = None,
     ) -> None:
         if queue_size < 1:
             raise ValueError("queue_size must be positive")
@@ -215,6 +312,10 @@ class SearchStream(Iterator[SearchEvent]):
             raise ValueError("max_retries cannot be negative")
         if retry_backoff < 0:
             raise ValueError("retry_backoff cannot be negative")
+        try:
+            parsed_ack_mode = AckMode(ack_mode)
+        except ValueError as exc:
+            raise ValueError("ack_mode must be 'implicit' or 'explicit'") from exc
         self.request = request
         self.registry = registry
         self.checkpoint_store = checkpoint_store or MemoryCheckpointStore()
@@ -223,8 +324,12 @@ class SearchStream(Iterator[SearchEvent]):
         self.user_agent = user_agent
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
-        self._queue: queue.Queue[_AdapterMessage] = queue.Queue(queue_size)
-        self._stop_event = threading.Event()
+        self.ack_mode = parsed_ack_mode
+        self._queue: queue.Queue[object] = queue.Queue(queue_size)
+        self._cancellation = _CancellationController(
+            cancel_event=cancel_event,
+            cancel_callback=cancel_callback,
+        )
         self._threads: list[threading.Thread] = []
         self._active_workers = 0
         self._sequence = 0
@@ -238,23 +343,46 @@ class SearchStream(Iterator[SearchEvent]):
         self._start_workers()
 
     def _load_checkpoint(self, *, resume: bool) -> SearchCheckpoint:
+        cursor_versions = {
+            site: self.registry.cursor_schema_version(site)
+            for site in self.request.sites
+        }
         loaded = self.checkpoint_store.load() if resume else None
         if loaded is None:
-            checkpoint = SearchCheckpoint.for_request(self.request)
+            checkpoint = SearchCheckpoint.for_request(self.request, cursor_versions)
             self.checkpoint_store.save(checkpoint)
             return checkpoint
+        if loaded.version != CHECKPOINT_VERSION:
+            raise CheckpointCompatibilityError(
+                f"Checkpoint schema {loaded.version} is incompatible with "
+                f"schema {CHECKPOINT_VERSION}"
+            )
         if loaded.request_fingerprint != self.request.fingerprint():
             raise CheckpointMismatchError(
                 "Checkpoint belongs to a different search request"
             )
-        missing_sites = [
-            site for site in self.request.sites if site.value not in loaded.adapters
-        ]
-        if missing_sites:
-            adapters = dict(loaded.adapters)
-            for site in missing_sites:
-                adapters[site.value] = AdapterCheckpoint(site=site)
-            loaded = loaded.model_copy(update={"adapters": adapters})
+        adapters = dict(loaded.adapters)
+        for site in self.request.sites:
+            expected_version = cursor_versions[site]
+            adapter_checkpoint = adapters.get(site.value)
+            if adapter_checkpoint is None:
+                adapters[site.value] = AdapterCheckpoint(
+                    site=site,
+                    cursor_schema_version=expected_version,
+                )
+                continue
+            if adapter_checkpoint.site is not site:
+                raise CheckpointCompatibilityError(
+                    f"Checkpoint adapter key {site.value!r} contains "
+                    f"state for {adapter_checkpoint.site.value!r}"
+                )
+            if adapter_checkpoint.cursor_schema_version != expected_version:
+                raise CheckpointCompatibilityError(
+                    f"{site.value} cursor schema "
+                    f"{adapter_checkpoint.cursor_schema_version} is incompatible "
+                    f"with adapter schema {expected_version}"
+                )
+        loaded = loaded.model_copy(update={"adapters": adapters})
         return loaded
 
     def _start_workers(self) -> None:
@@ -275,9 +403,9 @@ class SearchStream(Iterator[SearchEvent]):
             thread.start()
 
     def _put_message(self, message: _AdapterMessage) -> bool:
-        while not self._stop_event.is_set():
+        while not self._cancellation.cancelled:
             try:
-                self._queue.put(message, timeout=0.1)
+                self._queue.put(message, timeout=0.05)
                 return True
             except queue.Full:
                 continue
@@ -290,7 +418,7 @@ class SearchStream(Iterator[SearchEvent]):
             request=self.request,
             checkpoint=checkpoint,
             sink=self._put_message,
-            stop_event=self._stop_event,
+            cancellation=self._cancellation,
         )
         try:
             if not context.should_continue:
@@ -307,10 +435,12 @@ class SearchStream(Iterator[SearchEvent]):
                     if attempt == 0:
                         self._emit_capability_warnings(scraper, context)
                     parameters = inspect.signature(scraper.scrape).parameters
-                    if "context" in parameters:
-                        response = scraper.scrape(self.request, context=context)
-                    else:
-                        response = scraper.scrape(self.request)
+                    operation = (
+                        partial(scraper.scrape, self.request, context=context)
+                        if "context" in parameters
+                        else partial(scraper.scrape, self.request)
+                    )
+                    response = context.run_interruptibly(operation)
                     for job in response.jobs:
                         context.emit_job(job, context.resume_state)
                     if not context.cancelled:
@@ -323,9 +453,9 @@ class SearchStream(Iterator[SearchEvent]):
                         self._emit_site_complete(site, context)
                         return
 
-                    retryable = not isinstance(exc, (TypeError, ValueError))
+                    error = classify_exception(exc)
                     retries_left = self.max_retries - attempt
-                    if not retryable or retries_left <= 0:
+                    if not error.retryable or retries_left <= 0:
                         self._put_message(
                             _AdapterMessage(
                                 type=_MessageType.ERROR,
@@ -333,7 +463,9 @@ class SearchStream(Iterator[SearchEvent]):
                                 state=context.resume_state,
                                 message=str(exc),
                                 error_type=type(exc).__name__,
-                                recoverable=retryable,
+                                error_code=error.code,
+                                retryable=error.retryable,
+                                reset_checkpoint=error.reset_checkpoint,
                                 emitted_count=context.emitted_count,
                             )
                         )
@@ -398,13 +530,26 @@ class SearchStream(Iterator[SearchEvent]):
     def __next__(self) -> SearchEvent:
         if self._closed:
             raise StopIteration
+        if self._cancellation.externally_cancelled:
+            self.close()
+            raise StreamCancelledError("Search stream was cancelled")
         if self._last_delivered is not None and not self._last_acknowledged:
+            if self.ack_mode is AckMode.EXPLICIT:
+                raise UnacknowledgedEventError(
+                    "Acknowledge the previously delivered event before requesting "
+                    "another event"
+                )
             self.ack(self._last_delivered)
         if self._terminal_delivered:
             self.close()
             raise StopIteration
 
         while True:
+            if self._closed:
+                raise StopIteration
+            if self._cancellation.externally_cancelled:
+                self.close()
+                raise StreamCancelledError("Search stream was cancelled")
             if self._active_workers == 0:
                 self._sequence += 1
                 completed = all(
@@ -422,7 +567,15 @@ class SearchStream(Iterator[SearchEvent]):
                 self._remember(event)
                 return event
 
-            message = self._queue.get()
+            try:
+                queued = self._queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if queued is _WAKE:
+                continue
+            if self._closed:
+                raise StopIteration
+            message = cast(_AdapterMessage, queued)
             if message.type is _MessageType.WORKER_DONE:
                 self._active_workers -= 1
                 continue
@@ -463,8 +616,11 @@ class SearchStream(Iterator[SearchEvent]):
                     site=message.site,
                     message=message.message or "adapter failure",
                     error_type=message.error_type or "Exception",
-                    recoverable=message.recoverable,
+                    recoverable=message.retryable or message.reset_checkpoint,
                     resume_state=freeze_state(message.state),
+                    code=message.error_code,
+                    retryable=message.retryable,
+                    reset_checkpoint=message.reset_checkpoint,
                 )
                 self._total_errors += 1
             else:
@@ -515,14 +671,20 @@ class SearchStream(Iterator[SearchEvent]):
             if isinstance(event, SearchCompleteEvent)
             else self._checkpoint.completed
         )
-        self._checkpoint = self._checkpoint.model_copy(
+        checkpoint = self._checkpoint.model_copy(
             update={
                 "adapters": adapters,
                 "completed": completed,
+                "revision": self._checkpoint.revision + 1,
                 "updated_at": datetime.now(timezone.utc),
             }
         )
-        self.checkpoint_store.save(self._checkpoint)
+        try:
+            self.checkpoint_store.save(checkpoint)
+        except CheckpointConflictError:
+            self.close()
+            raise
+        self._checkpoint = checkpoint
         self._last_acknowledged = True
 
     def close(self, *, acknowledge: bool = False) -> None:
@@ -531,7 +693,19 @@ class SearchStream(Iterator[SearchEvent]):
         if acknowledge and self._last_delivered is not None:
             self.ack(self._last_delivered)
         self._closed = True
-        self._stop_event.set()
+        self._cancellation.stop()
+        self._wake_iterator()
+
+    def _wake_iterator(self) -> None:
+        while True:
+            try:
+                self._queue.put_nowait(_WAKE)
+                return
+            except queue.Full:
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    continue
 
     def __enter__(self) -> SearchStream:
         return self

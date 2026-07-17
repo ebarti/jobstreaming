@@ -44,7 +44,7 @@ flowchart LR
 
 ## Installation
 
-Python 3.10 or newer is required.
+Python 3.10 through Python 3.14 are tested.
 
 Install the published package from PyPI:
 
@@ -68,6 +68,7 @@ with stream_search(
     results_wanted=20,  # per site
     checkpoint_path=".jobstreaming/search.json",
     resume=True,
+    ack_mode="explicit",
 ) as stream:
     for event in stream:
         if isinstance(event, JobEvent):
@@ -75,13 +76,14 @@ with stream_search(
 
             # Persist the job first when durability matters, then explicitly ack it.
             save_to_database(event.job)
-            stream.ack(event)
 
         elif isinstance(event, ErrorEvent):
             print(f"{event.site.value} failed: {event.message}")
 
         elif isinstance(event, SearchCompleteEvent):
             print("all sites completed:", event.completed)
+
+        stream.ack(event)
 ```
 
 Each site runs in its own worker. Arrival order is intentionally unspecified: faster
@@ -108,7 +110,11 @@ checkpoint acknowledgements.
 
 Checkpointing is opt-in. Pass either `checkpoint_path` or a custom `CheckpointStore`.
 
-- A delivered event is implicitly acknowledged when the next event is requested.
+- The default `ack_mode="implicit"` preserves the convenient behavior where requesting
+  the next event acknowledges the previous event.
+- Use `ack_mode="explicit"` for durable consumers. In this mode, requesting another
+  event before `stream.ack(event)` raises `UnacknowledgedEventError` and does not advance
+  the checkpoint.
 - Call `stream.ack(event)` after a durable write when you need the checkpoint advanced
   immediately.
 - Leaving the context manager early does not acknowledge the last delivered event;
@@ -119,14 +125,22 @@ Checkpointing is opt-in. Pass either `checkpoint_path` or a custom `CheckpointSt
 - Acknowledged jobs are deduplicated with stable, process-independent keys.
 - Page and cursor state advances only after the corresponding progress event is
   acknowledged.
-- Recoverable adapter failures are retried once by default with exponential backoff.
-  Configure `max_retries` and `retry_backoff` on `stream_search` or `scrape_jobs`.
+- Only failures classified as `transient_network` or `rate_limited` are retried by
+  default. Configure `max_retries` and `retry_backoff` on `stream_search` or
+  `scrape_jobs`.
 - The checkpoint is written through an `fsync` plus atomic file replacement.
+- Checkpoints carry an overall schema version, a monotonically increasing revision, and
+  a cursor-state schema version for every adapter. An incompatible library or adapter
+  upgrade raises `CheckpointCompatibilityError` before any board worker starts.
 - A checkpoint is bound to the complete request fingerprint. Changing the query,
   filters, sites, or result count raises `CheckpointMismatchError`; use a new path or
   `resume=False` for a new search.
 - Board-owned cursors can expire. If a board rejects an old cursor, the stream emits an
-  `ErrorEvent`; restart that site from a fresh checkpoint.
+  `ErrorEvent` with `code="cursor_expired"` and `reset_checkpoint=True`; restart that
+  site from a fresh checkpoint.
+- Custom stores can provide compare-and-swap ownership using `checkpoint.revision`.
+  Raise `CheckpointConflictError` for a stale save; the conflict is surfaced to the
+  caller immediately and the stream stops without advancing its local checkpoint.
 
 If a process crashes while handling a job, replay is expected. Make downstream writes
 idempotent using `event.job_key` or the job's stable `id`.
@@ -170,6 +184,46 @@ store before acknowledging it.
 | `ErrorEvent` | A site failed; other sites continue. |
 | `SiteCompleteEvent` | One site exhausted its work or reached its result limit. |
 | `SearchCompleteEvent` | Every worker stopped. `completed=False` means at least one site failed. |
+
+`ErrorEvent.code` is a stable `ErrorCode` value. `retryable` tells an operator whether
+the same board operation can be retried, while `reset_checkpoint` tells them whether
+the board cursor should be discarded first.
+
+| Error code | Retry | Reset board checkpoint |
+|---|---:|---:|
+| `transient_network` | yes | no |
+| `rate_limited` | yes | no |
+| `invalid_request` | no | no |
+| `cursor_expired` | no | yes |
+| `authentication_configuration` | no | no |
+| `cancelled` | no | no |
+| `adapter_failure` | no | no |
+
+## Cancellation
+
+Supply a `threading.Event`, a callback, or both. Queue waits, retry backoff, and blocked
+adapter/network operations are observed through the same cancellation boundary.
+`close()` also wakes a consumer blocked in `next()`.
+
+```python
+from threading import Event
+
+from jobstreaming import StreamCancelledError, stream_search
+
+cancel = Event()
+
+try:
+    with stream_search(
+        site_name=["indeed", "linkedin"],
+        search_term="platform engineer",
+        cancel_event=cancel,
+        # cancel_callback=lambda: shutdown_requested(),  # optional alternative
+    ) as stream:
+        for event in stream:
+            process(event)
+except StreamCancelledError:
+    pass
+```
 
 ## Supported sites and important limits
 
@@ -216,9 +270,22 @@ job titles/URLs, and unsupported enum values are rejected at the boundary.
 ## Custom adapters
 
 ```python
-from jobstreaming import AdapterRegistry, JobResponse, Scraper, Site, stream_search
+from jobstreaming import (
+    AdapterCapabilities,
+    AdapterRegistry,
+    JobResponse,
+    Scraper,
+    Site,
+    stream_search,
+)
 
 class InternalJobs(Scraper):
+    capabilities = AdapterCapabilities(
+        supports_resume=True,
+        resume_granularity="cursor",
+        cursor_schema_version=1,
+    )
+
     def __init__(self, **kwargs):
         super().__init__(Site.INDEED)  # this example replaces the Indeed adapter
 
@@ -239,8 +306,10 @@ with stream_search(
         ...
 ```
 
-Legacy adapters that only return `JobResponse` are still accepted, but their results
-cannot be streamed until that adapter returns.
+Increment `cursor_schema_version` whenever a deployed adapter can no longer interpret
+cursor state written by its previous implementation. Legacy adapters that only return
+`JobResponse` are still accepted, but their results cannot be streamed until that
+adapter returns.
 
 The registry can replace any built-in adapter. Adding an entirely new site also
 requires adding that board to the `Site` enum so it participates in validation,

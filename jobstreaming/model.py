@@ -411,6 +411,7 @@ class AdapterCapabilities(FrozenModel):
     filters: frozenset[str] = frozenset()
     supports_resume: bool = False
     resume_granularity: str | None = None
+    cursor_schema_version: int = Field(default=1, ge=1)
 
 
 class Scraper(ABC):

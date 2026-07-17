@@ -26,6 +26,7 @@ class BaytScraper(Scraper):
         filters=frozenset({"offset"}),
         supports_resume=True,
         resume_granularity="page",
+        cursor_schema_version=1,
     )
     base_url = "https://www.bayt.com"
     delay = 2

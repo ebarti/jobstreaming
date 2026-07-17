@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
-from jobstreaming.exception import IndeedException
+from jobstreaming.exception import error_for_http_status, error_for_response_message
 from jobstreaming.indeed.constant import api_headers, job_search_query
 from jobstreaming.indeed.util import get_compensation, get_job_type, is_job_remote
 from jobstreaming.model import (
@@ -46,6 +46,7 @@ class Indeed(Scraper):
         ),
         supports_resume=True,
         resume_granularity="page",
+        cursor_schema_version=1,
     )
 
     def __init__(
@@ -172,11 +173,19 @@ class Indeed(Scraper):
             timeout=self.scraper_input.request_timeout,
         )
         if not response.ok:
-            raise IndeedException(f"Indeed returned HTTP {response.status_code}")
+            raise error_for_http_status(
+                "Indeed",
+                response.status_code,
+                cursor_active=cursor is not None,
+            )
         data = response.json()
         if data.get("errors"):
             message = data["errors"][0].get("message", "Indeed GraphQL error")
-            raise IndeedException(message)
+            raise error_for_response_message(
+                "Indeed",
+                message,
+                cursor_active=cursor is not None,
+            )
         search_data = (data.get("data") or {}).get("jobSearch") or {}
         jobs = search_data.get("results") or []
         new_cursor = (search_data.get("pageInfo") or {}).get("nextCursor")

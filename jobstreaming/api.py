@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pandas as pd
@@ -18,7 +19,7 @@ from jobstreaming.model import (
 )
 from jobstreaming.registry import AdapterRegistry, default_registry
 from jobstreaming.result import jobs_to_dataframe
-from jobstreaming.runtime import SearchStream
+from jobstreaming.runtime import AckMode, SearchStream
 from jobstreaming.util import create_logger, set_logger_level
 
 
@@ -97,6 +98,9 @@ def stream_search(
     queue_size: int = 128,
     max_retries: int = 1,
     retry_backoff: float = 0.5,
+    ack_mode: str | AckMode = AckMode.IMPLICIT,
+    cancel_event: Event | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
     **search_options: Any,
 ) -> SearchStream:
     if request is not None and search_options:
@@ -121,6 +125,9 @@ def stream_search(
         queue_size=queue_size,
         max_retries=max_retries,
         retry_backoff=retry_backoff,
+        ack_mode=ack_mode,
+        cancel_event=cancel_event,
+        cancel_callback=cancel_callback,
     )
 
 
@@ -136,8 +143,10 @@ def stream_jobs(
                 yield event.job
             elif isinstance(event, ErrorEvent) and raise_on_error:
                 raise RuntimeError(
-                    f"{event.site.value} failed: {event.error_type}: {event.message}"
+                    f"{event.site.value} failed [{event.code.value}]: "
+                    f"{event.error_type}: {event.message}"
                 )
+            stream.ack(event)
 
 
 def scrape_jobs(
@@ -171,6 +180,9 @@ def scrape_jobs(
     raise_on_error: bool = False,
     max_retries: int = 1,
     retry_backoff: float = 0.5,
+    ack_mode: str | AckMode = AckMode.IMPLICIT,
+    cancel_event: Event | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> pd.DataFrame:
     set_logger_level(verbose)
     request = build_search_request(
@@ -206,6 +218,9 @@ def scrape_jobs(
         user_agent=user_agent,
         max_retries=max_retries,
         retry_backoff=retry_backoff,
+        ack_mode=ack_mode,
+        cancel_event=cancel_event,
+        cancel_callback=cancel_callback,
     ) as stream:
         for event in stream:
             if isinstance(event, JobEvent):
@@ -213,12 +228,17 @@ def scrape_jobs(
             elif isinstance(event, ErrorEvent):
                 errors.append(event)
                 create_logger(event.site.value).error(
-                    "%s: %s", event.error_type, event.message
+                    "[%s] %s: %s",
+                    event.code.value,
+                    event.error_type,
+                    event.message,
                 )
+            stream.ack(event)
 
     if errors and raise_on_error:
         first = errors[0]
         raise RuntimeError(
-            f"{first.site.value} failed: {first.error_type}: {first.message}"
+            f"{first.site.value} failed [{first.code.value}]: "
+            f"{first.error_type}: {first.message}"
         )
     return jobs_to_dataframe(jobs, request)

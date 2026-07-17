@@ -11,13 +11,33 @@ AdapterFactory = Callable[..., Scraper]
 class AdapterRegistry:
     def __init__(self) -> None:
         self._factories: dict[Site, AdapterFactory] = {}
+        self._cursor_schema_versions: dict[Site, int] = {}
 
     def register(
-        self, site: Site, factory: AdapterFactory, *, replace: bool = False
+        self,
+        site: Site,
+        factory: AdapterFactory,
+        *,
+        replace: bool = False,
+        cursor_schema_version: int | None = None,
     ) -> None:
         if site in self._factories and not replace:
             raise ValueError(f"An adapter is already registered for {site.value}")
+        if cursor_schema_version is None:
+            capabilities = getattr(factory, "capabilities", None)
+            cursor_schema_version = getattr(
+                capabilities,
+                "cursor_schema_version",
+                1,
+            )
+        if (
+            not isinstance(cursor_schema_version, int)
+            or isinstance(cursor_schema_version, bool)
+            or cursor_schema_version < 1
+        ):
+            raise ValueError("cursor_schema_version must be a positive integer")
         self._factories[site] = factory
+        self._cursor_schema_versions[site] = cursor_schema_version
 
     def create(self, site: Site, **kwargs: Any) -> Scraper:
         try:
@@ -30,9 +50,16 @@ class AdapterRegistry:
     def sites(self) -> tuple[Site, ...]:
         return tuple(self._factories)
 
+    def cursor_schema_version(self, site: Site) -> int:
+        try:
+            return self._cursor_schema_versions[site]
+        except KeyError as exc:
+            raise ValueError(f"No adapter registered for {site.value}") from exc
+
     def copy(self) -> AdapterRegistry:
         registry = AdapterRegistry()
         registry._factories = self._factories.copy()
+        registry._cursor_schema_versions = self._cursor_schema_versions.copy()
         return registry
 
 

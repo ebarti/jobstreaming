@@ -48,6 +48,7 @@ class BDJobs(Scraper):
         filters=frozenset({"offset", "description_format"}),
         supports_resume=True,
         resume_granularity="page",
+        cursor_schema_version=1,
     )
 
     def __init__(

@@ -9,7 +9,10 @@ from typing import Any, TypeAlias
 
 from pydantic import Field
 
+from jobstreaming.exception import ErrorCode
 from jobstreaming.model import FrozenModel, JobPost, SearchRequest, Site
+
+CHECKPOINT_VERSION = 1
 
 
 def freeze_state(state: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -93,6 +96,9 @@ class ErrorEvent:
     error_type: str
     recoverable: bool
     resume_state: Mapping[str, Any]
+    code: ErrorCode = ErrorCode.ADAPTER_FAILURE
+    retryable: bool = False
+    reset_checkpoint: bool = False
     type: EventType = EventType.ERROR
 
 
@@ -128,6 +134,7 @@ SearchEvent: TypeAlias = (
 
 class AdapterCheckpoint(FrozenModel):
     site: Site
+    cursor_schema_version: int = Field(default=1, ge=1)
     state: dict[str, Any] = Field(default_factory=dict)
     seen_job_keys: tuple[str, ...] = ()
     emitted_count: int = 0
@@ -136,17 +143,27 @@ class AdapterCheckpoint(FrozenModel):
 
 
 class SearchCheckpoint(FrozenModel):
-    version: int = 1
+    version: int = CHECKPOINT_VERSION
+    revision: int = Field(default=0, ge=0)
     request_fingerprint: str
     adapters: dict[str, AdapterCheckpoint] = Field(default_factory=dict)
     completed: bool = False
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @classmethod
-    def for_request(cls, request: SearchRequest) -> SearchCheckpoint:
+    def for_request(
+        cls,
+        request: SearchRequest,
+        cursor_schema_versions: Mapping[Site, int] | None = None,
+    ) -> SearchCheckpoint:
+        versions = cursor_schema_versions or {}
         return cls(
             request_fingerprint=request.fingerprint(),
             adapters={
-                site.value: AdapterCheckpoint(site=site) for site in request.sites
+                site.value: AdapterCheckpoint(
+                    site=site,
+                    cursor_schema_version=versions.get(site, 1),
+                )
+                for site in request.sites
             },
         )

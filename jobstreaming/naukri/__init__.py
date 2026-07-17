@@ -50,6 +50,7 @@ class Naukri(Scraper):
         ),
         supports_resume=True,
         resume_granularity="page",
+        cursor_schema_version=1,
     )
 
     def __init__(

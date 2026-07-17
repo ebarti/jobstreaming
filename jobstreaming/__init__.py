@@ -5,8 +5,11 @@ from jobstreaming.api import (
     stream_search,
 )
 from jobstreaming.checkpoint import (
+    CheckpointCompatibilityError,
+    CheckpointConflictError,
     CheckpointError,
     CheckpointMismatchError,
+    CheckpointStore,
     JsonFileCheckpointStore,
     MemoryCheckpointStore,
 )
@@ -20,6 +23,17 @@ from jobstreaming.events import (
     SearchCompleteEvent,
     SiteCompleteEvent,
     WarningEvent,
+)
+from jobstreaming.exception import (
+    AuthenticationConfigurationError,
+    CursorExpiredError,
+    ErrorCode,
+    InvalidRequestError,
+    JobStreamingError,
+    RateLimitError,
+    StreamCancelledError,
+    TransientNetworkError,
+    UnacknowledgedEventError,
 )
 from jobstreaming.model import (
     AdapterCapabilities,
@@ -38,28 +52,38 @@ from jobstreaming.model import (
     Site,
 )
 from jobstreaming.registry import AdapterRegistry, default_registry
-from jobstreaming.runtime import ScrapeContext, SearchStream
+from jobstreaming.runtime import AckMode, ScrapeContext, SearchStream
 
 __all__ = [
     "AdapterCapabilities",
     "AdapterCheckpoint",
     "AdapterRegistry",
+    "AckMode",
+    "AuthenticationConfigurationError",
+    "CheckpointCompatibilityError",
+    "CheckpointConflictError",
     "CheckpointError",
     "CheckpointMismatchError",
+    "CheckpointStore",
     "Compensation",
     "CompensationInterval",
     "Country",
+    "CursorExpiredError",
     "DescriptionFormat",
+    "ErrorCode",
     "ErrorEvent",
     "EventType",
     "JobEvent",
     "JobPost",
     "JobResponse",
+    "JobStreamingError",
     "JobType",
     "JsonFileCheckpointStore",
+    "InvalidRequestError",
     "Location",
     "MemoryCheckpointStore",
     "ProgressEvent",
+    "RateLimitError",
     "SalarySource",
     "ScrapeContext",
     "Scraper",
@@ -70,6 +94,9 @@ __all__ = [
     "SearchStream",
     "Site",
     "SiteCompleteEvent",
+    "StreamCancelledError",
+    "TransientNetworkError",
+    "UnacknowledgedEventError",
     "WarningEvent",
     "build_search_request",
     "default_registry",
