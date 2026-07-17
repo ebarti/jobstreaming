@@ -17,6 +17,14 @@ class CheckpointMismatchError(CheckpointError):
     pass
 
 
+class CheckpointCompatibilityError(CheckpointError):
+    """The checkpoint or an adapter cursor uses an unsupported schema version."""
+
+
+class CheckpointConflictError(CheckpointError):
+    """A store rejected a save because the caller owns a stale revision."""
+
+
 class CheckpointStore(Protocol):
     def load(self) -> SearchCheckpoint | None: ...
 

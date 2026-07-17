@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
-from jobstreaming.exception import ZipRecruiterException
+from jobstreaming.exception import error_for_http_status
 from jobstreaming.model import (
     AdapterCapabilities,
     Compensation,
@@ -56,6 +56,7 @@ class ZipRecruiter(Scraper):
         ),
         supports_resume=True,
         resume_granularity="continuation token",
+        cursor_schema_version=1,
     )
 
     def __init__(
@@ -166,11 +167,11 @@ class ZipRecruiter(Scraper):
             timeout_seconds=scraper_input.request_timeout,
         )
         if res.status_code not in range(200, 400):
-            if res.status_code == 429:
-                message = "ZipRecruiter rate limited the search"
-            else:
-                message = f"ZipRecruiter returned HTTP {res.status_code}"
-            raise ZipRecruiterException(message)
+            raise error_for_http_status(
+                "ZipRecruiter",
+                res.status_code,
+                cursor_active=continue_token is not None,
+            )
 
         res_data = res.json()
         jobs_list = res_data.get("jobs", [])

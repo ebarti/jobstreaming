@@ -13,6 +13,7 @@ from jobstreaming import (
     SearchCompleteEvent,
     SearchRequest,
     Site,
+    TransientNetworkError,
     stream_search,
 )
 
@@ -108,7 +109,7 @@ def test_transient_adapter_failure_retries_from_the_same_context() -> None:
             nonlocal attempts
             attempts += 1
             if attempts == 1:
-                raise RuntimeError("temporary outage")
+                raise TransientNetworkError("temporary outage")
             assert context is not None
             job = _job(self.site, 1)
             context.emit_job(job, {"page": 1})

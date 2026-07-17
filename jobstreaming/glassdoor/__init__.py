@@ -7,7 +7,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
-from jobstreaming.exception import GlassdoorException
+from jobstreaming.exception import (
+    InvalidRequestError,
+    error_for_http_status,
+    error_for_response_message,
+)
 from jobstreaming.glassdoor.constant import fallback_token, headers, query_template
 from jobstreaming.glassdoor.util import (
     get_cursor_for_page,
@@ -51,6 +55,7 @@ class Glassdoor(Scraper):
         ),
         supports_resume=True,
         resume_granularity="page",
+        cursor_schema_version=1,
     )
 
     def __init__(
@@ -104,7 +109,7 @@ class Glassdoor(Scraper):
             scraper_input.location, scraper_input.is_remote
         )
         if location_id is None or location_type is None:
-            raise GlassdoorException("Glassdoor location could not be resolved")
+            raise InvalidRequestError("Glassdoor location could not be resolved")
         job_list: list[JobPost] = []
         state = context.resume_state
         page = int(state.get("page", 1 + (scraper_input.offset // self.jobs_per_page)))
@@ -155,11 +160,19 @@ class Glassdoor(Scraper):
             data=payload,
         )
         if response.status_code != 200:
-            raise GlassdoorException(f"Glassdoor returned HTTP {response.status_code}")
+            raise error_for_http_status(
+                "Glassdoor",
+                response.status_code,
+                cursor_active=cursor is not None,
+            )
         res_json = response.json()[0]
         if "errors" in res_json:
             message = res_json["errors"][0].get("message", "GraphQL error")
-            raise GlassdoorException(message)
+            raise error_for_response_message(
+                "Glassdoor",
+                message,
+                cursor_active=cursor is not None,
+            )
 
         jobs_data = res_json["data"]["jobListings"]["jobListings"]
 

@@ -9,7 +9,7 @@ from urllib.parse import unquote, urlparse, urlunparse
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from jobstreaming.exception import LinkedInException
+from jobstreaming.exception import error_for_http_status
 from jobstreaming.linkedin.constant import headers
 from jobstreaming.linkedin.util import (
     is_job_remote,
@@ -66,6 +66,7 @@ class LinkedIn(Scraper):
         ),
         supports_resume=True,
         resume_granularity="page",
+        cursor_schema_version=1,
     )
 
     def __init__(
@@ -159,12 +160,11 @@ class LinkedIn(Scraper):
                 timeout=scraper_input.request_timeout,
             )
             if response.status_code not in range(200, 400):
-                message = (
-                    "LinkedIn rate limited the search"
-                    if response.status_code == 429
-                    else f"LinkedIn returned HTTP {response.status_code}"
+                raise error_for_http_status(
+                    "LinkedIn",
+                    response.status_code,
+                    cursor_active=bool(resume_state) or pages_completed > 0,
                 )
-                raise LinkedInException(message)
 
             soup = BeautifulSoup(response.text, "html.parser")
             job_cards = soup.find_all("div", class_="base-search-card")

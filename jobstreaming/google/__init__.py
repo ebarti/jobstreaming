@@ -34,6 +34,7 @@ class Google(Scraper):
         filters=frozenset({"location", "is_remote", "job_type", "offset", "hours_old"}),
         supports_resume=True,
         resume_granularity="cursor",
+        cursor_schema_version=1,
     )
 
     def __init__(
