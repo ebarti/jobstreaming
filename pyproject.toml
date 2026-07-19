@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [project]
 name = "jobstreaming"
 version = "0.0.2"
-description = "Concurrent, resumable job search streams with a DataFrame batch API"
+description = "Stream normalized jobs from multiple boards with typed events and durable checkpoints"
 authors = [{ name = "JobStreaming contributors" }]
 license = "MIT"
 readme = "README.md"
@@ -19,8 +19,12 @@ dependencies = [
     "markdownify>=1.1.0,<2.0.0",
 ]
 keywords = [
+    "job-search",
+    "job-boards",
     "jobs-scraper",
     "streaming",
+    "resumable",
+    "data-pipeline",
     "linkedin",
     "indeed",
     "glassdoor",
