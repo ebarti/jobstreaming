@@ -1,18 +1,26 @@
 # JobStreaming
 
-JobStreaming is the concurrent, restartable job-collection library for JobCtrl. Its
-primary API yields each job as soon as its adapter produces it, while retaining a
-convenient DataFrame batch API.
+**Concurrent, resumable job collection for Python.**
 
-This project is a heavily modified private fork of an MIT-licensed upstream project.
-It retains the original license and attribution while using a completely separate
-project, distribution, and import identity.
+JobStreaming collects and normalizes listings from multiple job boards, yielding each
+result as soon as its source returns it. Concurrent adapters, typed events, durable
+checkpoints, and stable job identities make it suitable for scripts, data pipelines,
+background workers, workflow engines, and job-market analysis.
+
+It is a standalone Python package: no companion service, database, or
+application-specific configuration is required. Use the full event stream for durable
+ingestion, a job-only iterator for simple consumers, or the familiar DataFrame API for
+batch analysis.
+
+JobStreaming is an independently maintained, heavily modified fork of an MIT-licensed
+upstream project. It retains the original license and attribution while using a
+separate project, distribution, and import identity.
 
 > **Alpha:** job boards change private endpoints and markup without notice. Treat every
 > adapter as a best-effort integration, respect each site's terms and rate limits, and
 > persist the events you need.
 
-## What changed
+## What it provides
 
 - Searches run concurrently across sites; a slow or blocked site does not hold back
   healthy sites.
@@ -23,9 +31,20 @@ project, distribution, and import identity.
 - Adapter failures are isolated. The batch API returns healthy partial results unless
   strict failure mode is requested.
 - Requests and result models are immutable and validated.
-- A `scrape_jobs(...) -> pandas.DataFrame` entry point remains available.
+- A `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and analysis
+  workflows.
 - Adapters are registered through an extensible registry rather than a hard-coded
   dispatcher.
+
+Choose the interface that matches your consumer:
+
+| Need | API |
+|---|---|
+| Durable ingestion with progress, errors, and explicit acknowledgement | `stream_search` |
+| A simple iterator of normalized jobs | `stream_jobs` |
+| A Pandas DataFrame for notebooks, exports, or batch analysis | `scrape_jobs` |
+| Application-owned checkpoint persistence | `CheckpointStore` |
+| Replacing or extending source behavior | `AdapterRegistry` |
 
 ```mermaid
 flowchart LR
@@ -53,8 +72,7 @@ pip install -U jobstreaming
 ```
 
 Both the PyPI distribution and Python import package are `jobstreaming`. No legacy
-import alias is included. The source repository remains private; PyPI releases are
-performed explicitly from verified distribution artifacts.
+import alias or host application is required.
 
 ## Stream results immediately
 
