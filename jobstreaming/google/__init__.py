@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 
+from jobstreaming.exception import error_for_http_status
 from jobstreaming.google.constant import async_param, headers_initial, headers_jobs
 from jobstreaming.google.util import (
     find_job_info,
@@ -32,6 +33,14 @@ from jobstreaming.util import (
 class Google(Scraper):
     capabilities = AdapterCapabilities(
         filters=frozenset({"location", "is_remote", "job_type", "offset", "hours_old"}),
+        supported_job_types=frozenset(
+            {
+                JobType.FULL_TIME,
+                JobType.PART_TIME,
+                JobType.INTERNSHIP,
+                JobType.CONTRACT,
+            }
+        ),
         supports_resume=True,
         resume_granularity="cursor",
         cursor_schema_version=1,
@@ -64,7 +73,6 @@ class Google(Scraper):
             proxies=self.proxies,
             ca_cert=self.ca_cert,
             is_tls=False,
-            has_retry=True,
         )
 
         emitted: list[JobPost] = []
@@ -168,7 +176,12 @@ class Google(Scraper):
             params={"q": query, "udm": "8"},
             timeout=self.scraper_input.request_timeout,
         )
-        response.raise_for_status()
+        if response.status_code not in range(200, 400):
+            raise error_for_http_status(
+                "Google",
+                response.status_code,
+                retry_after=(getattr(response, "headers", {}) or {}).get("Retry-After"),
+            )
         match = re.search(
             r'<div jsname="Yust4d"[^>]+data-async-fc="([^"]+)"', response.text
         )
@@ -193,7 +206,13 @@ class Google(Scraper):
             params=params,
             timeout=self.scraper_input.request_timeout,
         )
-        response.raise_for_status()
+        if response.status_code not in range(200, 400):
+            raise error_for_http_status(
+                "Google",
+                response.status_code,
+                cursor_active=True,
+                retry_after=(getattr(response, "headers", {}) or {}).get("Retry-After"),
+            )
         return self._parse_jobs(response.text)
 
     def _parse_jobs(self, job_data: str) -> tuple[list[JobPost], str | None]:

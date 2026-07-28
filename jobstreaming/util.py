@@ -9,8 +9,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import requests
 import tls_client
 from markdownify import markdownify as md
-from requests.adapters import HTTPAdapter, Retry
 
+from jobstreaming.exception import AuthenticationConfigurationError
 from jobstreaming.model import CompensationInterval, JobType, Site
 
 _JOBSTREAMING_LOG_LEVEL = logging.INFO
@@ -53,25 +53,11 @@ class RotatingProxySession:
 
 
 class RequestsRotating(RotatingProxySession, requests.Session):
-    def __init__(self, proxies=None, has_retry=False, delay=1, clear_cookies=False):
+    def __init__(self, proxies=None, clear_cookies=False):
         RotatingProxySession.__init__(self, proxies=proxies)
         requests.Session.__init__(self)
         self.clear_cookies = clear_cookies
         self.allow_redirects = True
-        self.setup_session(has_retry, delay)
-
-    def setup_session(self, has_retry, delay):
-        if has_retry:
-            retries = Retry(
-                total=3,
-                connect=3,
-                status=3,
-                status_forcelist=[500, 502, 503, 504, 429],
-                backoff_factor=delay,
-            )
-            adapter = HTTPAdapter(max_retries=retries)
-            self.mount("http://", adapter)
-            self.mount("https://", adapter)
 
     def request(self, method, url, **kwargs):
         if self.clear_cookies:
@@ -108,25 +94,28 @@ def create_session(
     proxies: list[str] | str | None = None,
     ca_cert: str | None = None,
     is_tls: bool = True,
-    has_retry: bool = False,
-    delay: int = 1,
     clear_cookies: bool = False,
 ) -> requests.Session:
     """
-    Creates a requests session with optional tls, proxy, and retry settings.
+    Create a session; public retry policy is owned by the stream coordinator.
+
+    tls-client cannot consume a custom CA bundle. Reject that combination instead
+    of silently assigning an ineffective ``verify`` attribute.
     :return: A session object
     """
+    if is_tls and ca_cert:
+        raise AuthenticationConfigurationError(
+            "Custom CA files are not supported by tls-client adapters"
+        )
     if is_tls:
         session = TLSRotating(proxies=proxies)
     else:
         session = RequestsRotating(
             proxies=proxies,
-            has_retry=has_retry,
-            delay=delay,
             clear_cookies=clear_cookies,
         )
 
-    if ca_cert:
+    if ca_cert and not is_tls:
         session.verify = ca_cert
 
     return session

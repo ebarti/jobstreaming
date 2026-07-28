@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
-from jobstreaming.exception import error_for_http_status
+from jobstreaming.exception import (
+    AuthenticationConfigurationError,
+    error_for_http_status,
+)
 from jobstreaming.model import (
     AdapterCapabilities,
     Compensation,
@@ -64,6 +69,10 @@ class ZipRecruiter(Scraper):
         proxies: list[str] | str | None = None,
         ca_cert: str | None = None,
         user_agent: str | None = None,
+        authorization: str | None = None,
+        device_id: str | None = None,
+        push_notification_id: str | None = None,
+        zva_override: str | None = None,
     ):
         """
         Initializes ZipRecruiterScraper with the ZipRecruiter job search url
@@ -77,9 +86,29 @@ class ZipRecruiter(Scraper):
 
         self.scraper_input = None
         self.session = create_session(proxies=proxies, ca_cert=ca_cert)
+        self.authorization = authorization or os.getenv(
+            "JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION"
+        )
         session_headers = {
             key: value for key, value in headers.items() if key.lower() != "host"
         }
+        session_headers["x-deviceid"] = (
+            device_id
+            or os.getenv("JOBSTREAMING_ZIPRECRUITER_DEVICE_ID")
+            or str(uuid.uuid4()).upper()
+        )
+        configured_push_id = push_notification_id or os.getenv(
+            "JOBSTREAMING_ZIPRECRUITER_PUSH_NOTIFICATION_ID"
+        )
+        configured_override = zva_override or os.getenv(
+            "JOBSTREAMING_ZIPRECRUITER_ZVA_OVERRIDE"
+        )
+        if self.authorization:
+            session_headers["authorization"] = self.authorization
+        if configured_push_id:
+            session_headers["x-pushnotificationid"] = configured_push_id
+        if configured_override:
+            session_headers["x-zr-zva-override"] = configured_override
         if user_agent:
             session_headers["user-agent"] = user_agent
         self.session.headers.update(session_headers)
@@ -99,6 +128,10 @@ class ZipRecruiter(Scraper):
         """
         self.scraper_input = scraper_input
         context = ScrapeContext.local(self.site, scraper_input, context)
+        if not self.authorization:
+            raise AuthenticationConfigurationError(
+                "ZipRecruiter requires JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION"
+            )
         job_list: list[JobPost] = []
         state = context.resume_state
         continue_token = state.get("continue_token")
@@ -171,6 +204,7 @@ class ZipRecruiter(Scraper):
                 "ZipRecruiter",
                 res.status_code,
                 cursor_active=continue_token is not None,
+                retry_after=(getattr(res, "headers", {}) or {}).get("Retry-After"),
             )
 
         res_data = res.json()

@@ -217,6 +217,7 @@ def test_ziprecruiter_follows_continuations_until_the_result_limit(
     monkeypatch,
 ) -> None:
     scraper = ZipRecruiter()
+    scraper.authorization = "configured-for-test"
     scraper.delay = 0
     monkeypatch.setattr(scraper, "_get_cookies", lambda: None)
 

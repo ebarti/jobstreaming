@@ -37,7 +37,7 @@ def _job(site: Site, number: int) -> JobPost:
 def _indeed_factory(instances: list[int]):
     class ReplayIndeed(Indeed):
         def __init__(self, **kwargs) -> None:
-            super().__init__(**kwargs)
+            super().__init__(api_key="configured-for-test", **kwargs)
             instances.append(1)
 
         def _scrape_page(self, cursor):
@@ -87,7 +87,7 @@ def _ziprecruiter_factory(instances: list[int]):
         delay = 0
 
         def __init__(self, **kwargs) -> None:
-            super().__init__(**kwargs)
+            super().__init__(authorization="configured-for-test", **kwargs)
             instances.append(1)
             self.delay = 0
 
@@ -285,7 +285,7 @@ def _expired_factory(site: Site, requests: list[int]):
 
         class ExpiredIndeed(Indeed):
             def __init__(self, **kwargs) -> None:
-                super().__init__(**kwargs)
+                super().__init__(api_key="configured-for-test", **kwargs)
                 self.session = _ExpiredSession()
 
             def _scrape_page(self, cursor):
@@ -316,7 +316,7 @@ def _expired_factory(site: Site, requests: list[int]):
             delay = 0
 
             def __init__(self, **kwargs) -> None:
-                super().__init__(**kwargs)
+                super().__init__(authorization="configured-for-test", **kwargs)
                 self.session = _ExpiredSession()
                 self.delay = 0
 

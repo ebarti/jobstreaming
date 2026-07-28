@@ -72,8 +72,6 @@ class BDJobs(Scraper):
             proxies=self.proxies,
             ca_cert=self.ca_cert,
             is_tls=False,
-            has_retry=True,
-            delay=5,
             clear_cookies=True,
         )
         request_headers = headers.copy()

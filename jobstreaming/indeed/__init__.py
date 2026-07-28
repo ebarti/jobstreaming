@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import math
+import os
 from datetime import datetime, timezone
 
-from jobstreaming.exception import error_for_http_status, error_for_response_message
+from jobstreaming.exception import (
+    AuthenticationConfigurationError,
+    error_for_http_status,
+    error_for_response_message,
+)
 from jobstreaming.indeed.constant import api_headers, job_search_query
 from jobstreaming.indeed.util import get_compensation, get_job_type, is_job_remote
 from jobstreaming.model import (
@@ -44,6 +49,14 @@ class Indeed(Scraper):
                 "description_format",
             }
         ),
+        supported_job_types=frozenset(
+            {
+                JobType.FULL_TIME,
+                JobType.PART_TIME,
+                JobType.CONTRACT,
+                JobType.INTERNSHIP,
+            }
+        ),
         supports_resume=True,
         resume_granularity="page",
         cursor_schema_version=1,
@@ -54,6 +67,7 @@ class Indeed(Scraper):
         proxies: list[str] | str | None = None,
         ca_cert: str | None = None,
         user_agent: str | None = None,
+        api_key: str | None = None,
     ):
         """
         Initializes IndeedScraper with the Indeed API url
@@ -75,6 +89,7 @@ class Indeed(Scraper):
         self.api_country_code = None
         self.base_url = None
         self.api_url = "https://apis.indeed.com/graphql"
+        self.api_key = api_key or os.getenv("JOBSTREAMING_INDEED_API_KEY")
 
     def scrape(
         self, scraper_input: ScraperInput, context: ScrapeContext | None = None
@@ -86,9 +101,14 @@ class Indeed(Scraper):
         """
         self.scraper_input = scraper_input
         context = ScrapeContext.local(self.site, scraper_input, context)
+        if not self.api_key:
+            raise AuthenticationConfigurationError(
+                "Indeed requires JOBSTREAMING_INDEED_API_KEY"
+            )
         domain, self.api_country_code = self.scraper_input.country.indeed_domain_value
         self.base_url = f"https://{domain}.indeed.com"
         self.headers = api_headers.copy()
+        self.headers["indeed-api-key"] = self.api_key
         self.headers["indeed-co"] = self.api_country_code
         if self.user_agent:
             self.headers["user-agent"] = self.user_agent
@@ -177,6 +197,7 @@ class Indeed(Scraper):
                 "Indeed",
                 response.status_code,
                 cursor_active=cursor is not None,
+                retry_after=(getattr(response, "headers", {}) or {}).get("Retry-After"),
             )
         data = response.json()
         if data.get("errors"):
@@ -238,12 +259,8 @@ class Indeed(Scraper):
             keys = []
             if self.scraper_input.job_type:
                 key = job_type_key_mapping.get(self.scraper_input.job_type)
-                if key is None:
-                    raise ValueError(
-                        f"Indeed does not support job type "
-                        f"{self.scraper_input.job_type.canonical}"
-                    )
-                keys.append(key)
+                if key is not None:
+                    keys.append(key)
 
             if self.scraper_input.is_remote:
                 keys.append("DSQF7")

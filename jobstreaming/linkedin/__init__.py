@@ -26,6 +26,7 @@ from jobstreaming.model import (
     DescriptionFormat,
     JobPost,
     JobResponse,
+    JobType,
     Location,
     SalarySource,
     Scraper,
@@ -64,6 +65,15 @@ class LinkedIn(Scraper):
                 "description_format",
             }
         ),
+        supported_job_types=frozenset(
+            {
+                JobType.FULL_TIME,
+                JobType.PART_TIME,
+                JobType.INTERNSHIP,
+                JobType.CONTRACT,
+                JobType.TEMPORARY,
+            }
+        ),
         supports_resume=True,
         resume_granularity="page",
         cursor_schema_version=1,
@@ -88,8 +98,6 @@ class LinkedIn(Scraper):
             proxies=self.proxies,
             ca_cert=ca_cert,
             is_tls=False,
-            has_retry=True,
-            delay=5,
             clear_cookies=True,
         )
         self.session.headers.update(headers)
@@ -164,6 +172,9 @@ class LinkedIn(Scraper):
                     "LinkedIn",
                     response.status_code,
                     cursor_active=bool(resume_state) or pages_completed > 0,
+                    retry_after=(getattr(response, "headers", {}) or {}).get(
+                        "Retry-After"
+                    ),
                 )
 
             soup = BeautifulSoup(response.text, "html.parser")

@@ -4,14 +4,14 @@ from jobstreaming.model import JobType, Location
 from jobstreaming.util import get_enum_from_job_type
 
 
-def job_type_code(job_type_enum: JobType) -> str:
+def job_type_code(job_type_enum: JobType) -> str | None:
     return {
         JobType.FULL_TIME: "F",
         JobType.PART_TIME: "P",
         JobType.INTERNSHIP: "I",
         JobType.CONTRACT: "C",
         JobType.TEMPORARY: "T",
-    }.get(job_type_enum, "")
+    }.get(job_type_enum)
 
 
 def parse_job_type(soup_job_type: BeautifulSoup) -> list[JobType] | None:
