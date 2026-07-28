@@ -7,10 +7,10 @@ result as soon as its source returns it. Concurrent adapters, typed events, dura
 checkpoints, and stable job identities make it suitable for scripts, data pipelines,
 background workers, workflow engines, and job-market analysis.
 
-It is a standalone Python package: no companion service, database, or
-application-specific configuration is required. Use the full event stream for durable
-ingestion, a job-only iterator for simple consumers, or the familiar DataFrame API for
-batch analysis.
+It is a standalone Python package: no companion service or database is required. Some
+board adapters require operator-provided board credentials; the package does not ship
+shared credentials. Use the full event stream for durable ingestion, a job-only
+iterator for simple consumers, or the familiar DataFrame API for batch analysis.
 
 JobStreaming is an independently maintained, heavily modified fork of an MIT-licensed
 upstream project. It retains the original license and attribution while using a
@@ -18,7 +18,8 @@ separate project, distribution, and import identity.
 
 > **Alpha:** job boards change private endpoints and markup without notice. Treat every
 > adapter as a best-effort integration, respect each site's terms and rate limits, and
-> persist the events you need.
+> persist the events you need. Adapter availability can drift between releases, and
+> the project provides no uptime, compatibility, or support-response SLA.
 
 ## What it provides
 
@@ -73,6 +74,32 @@ pip install -U jobstreaming
 
 Both the PyPI distribution and Python import package are `jobstreaming`. No legacy
 import alias or host application is required.
+
+## Board credentials and TLS configuration
+
+JobStreaming does not embed reusable board credentials or fallback tokens. Configure
+only the adapters you are authorized to use, preferably through a process-level secret
+manager:
+
+| Adapter | Configuration | Behavior when absent |
+|---|---|---|
+| Indeed | `JOBSTREAMING_INDEED_API_KEY` | Emits `authentication_configuration`. |
+| Naukri | `JOBSTREAMING_NAUKRI_NKPARAM` | Emits `authentication_configuration`. |
+| ZipRecruiter | `JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION` | Emits `authentication_configuration`. |
+| Glassdoor | Discovers a live CSRF token; optional fallback `JOBSTREAMING_GLASSDOOR_CSRF_TOKEN` | Emits `authentication_configuration` if discovery fails and no configured token exists. |
+
+ZipRecruiter also accepts optional
+`JOBSTREAMING_ZIPRECRUITER_DEVICE_ID`,
+`JOBSTREAMING_ZIPRECRUITER_PUSH_NOTIFICATION_ID`, and
+`JOBSTREAMING_ZIPRECRUITER_ZVA_OVERRIDE` values when your authorized integration
+requires them. Never commit these values or include them in fixtures, logs, issues, or
+checkpoint files.
+
+`ca_cert` is supported by adapters built on `requests`. Glassdoor and ZipRecruiter use
+`tls-client`, whose current Python API cannot consume a custom CA bundle; those
+adapters raise `AuthenticationConfigurationError` when `ca_cert` is supplied instead
+of silently ignoring it. Use system trust, a correctly configured proxy, or a custom
+requests-based adapter when a private CA is required.
 
 ## Stream results immediately
 
@@ -145,7 +172,11 @@ Checkpointing is opt-in. Pass either `checkpoint_path` or a custom `CheckpointSt
   acknowledged.
 - Only failures classified as `transient_network` or `rate_limited` are retried by
   default. Configure `max_retries` and `retry_backoff` on `stream_search` or
-  `scrape_jobs`.
+  `scrape_jobs`. `max_retries` means coordinator retries after the initial adapter
+  attempt; adapters do not hide additional transport retries.
+- Valid `Retry-After` delta or HTTP-date values on retryable board responses are
+  honored, capped at five minutes. The selected delay is the larger of `Retry-After`
+  and exponential `retry_backoff`.
 - The checkpoint is written through an `fsync` plus atomic file replacement.
 - Checkpoints carry an overall schema version, a monotonically increasing revision, and
   a cursor-state schema version for every adapter. An incompatible library or adapter
@@ -205,7 +236,8 @@ store before acknowledging it.
 
 `ErrorEvent.code` is a stable `ErrorCode` value. `retryable` tells an operator whether
 the same board operation can be retried, while `reset_checkpoint` tells them whether
-the board cursor should be discarded first.
+the board cursor should be discarded first. `retry_after` preserves a valid, bounded
+board-requested delay on a retryable terminal failure.
 
 | Error code | Retry | Reset board checkpoint |
 |---|---:|---:|
@@ -221,7 +253,9 @@ the board cursor should be discarded first.
 
 Supply a `threading.Event`, a callback, or both. Queue waits, retry backoff, and blocked
 adapter/network operations are observed through the same cancellation boundary.
-`close()` also wakes a consumer blocked in `next()`.
+`close()` also wakes a consumer blocked in `next()`. Cancellation is monotonic: after
+an event is set or a callback returns `True` once, that stream remains cancelled and
+cannot later report a healthy completion.
 
 ```python
 from threading import Event
@@ -247,18 +281,19 @@ except StreamCancelledError:
 
 | Site | Restart boundary | Notes |
 |---|---|---|
-| Indeed | cursor/page | `hours_old`, `easy_apply`, and `job_type`/`is_remote` are mutually exclusive in the upstream API. |
+| Indeed | cursor/page | Requires `JOBSTREAMING_INDEED_API_KEY`. `hours_old`, `easy_apply`, and `job_type`/`is_remote` are mutually exclusive in the upstream API. |
 | LinkedIn | result offset/page | Full descriptions require `linkedin_fetch_description=True` and add one request per job. Aggressive rate limiting is common. |
-| ZipRecruiter | continuation token | US and Canada are the primary supported markets. |
-| Glassdoor | page/cursor | A location is required unless `is_remote=True`. Availability depends on `country_indeed`. |
+| ZipRecruiter | continuation token | Requires `JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION`. US and Canada are the primary supported markets. |
+| Glassdoor | page/cursor | Uses live CSRF discovery or explicitly configured fallback. A location is required unless `is_remote=True`. Availability depends on `country_indeed`. |
 | Google Jobs | cursor | `google_search_term` can override the generated query. The upstream response format is opaque and fragile. |
 | Bayt | page | Currently supports keyword search and international results. |
-| Naukri | page | India-focused. A non-empty `search_term` is required. |
+| Naukri | page | Requires `JOBSTREAMING_NAUKRI_NKPARAM`. India-focused. A non-empty `search_term` is required. |
 | BDJobs | page | Bangladesh-focused. Detail pages are fetched concurrently within each result page. |
 
-Adapters declare their supported filters. If a selected adapter cannot honor a
-requested filter, the stream emits a `WarningEvent` instead of silently implying that
-the filter was applied.
+Adapters declare their supported filter names and, for enum filters such as
+`job_type`, supported values. If a selected adapter cannot honor a requested filter or
+value, the stream emits a `WarningEvent` and omits the parameter instead of silently
+implying that it was applied.
 
 ## Validated request API
 
@@ -346,6 +381,20 @@ poetry build
 The test suite is offline: it validates domain invariants, concurrency, failure
 isolation, acknowledgement/replay behavior, checkpoint persistence, compatibility, and
 representative adapter parsing without calling live job boards.
+
+## Support and security
+
+Use [GitHub issues](https://github.com/ebarti/jobstreaming/issues) for reproducible
+bugs, adapter drift reports, and non-sensitive support questions. Include the
+JobStreaming version, selected adapter, sanitized error event, and an offline
+reproduction when possible.
+
+Do not place credentials or vulnerability details in an issue. See
+[SECURITY.md](https://github.com/ebarti/jobstreaming/blob/main/SECURITY.md) for private
+reporting and supported-version policy, and
+[CONTRIBUTING.md](https://github.com/ebarti/jobstreaming/blob/main/CONTRIBUTING.md)
+before submitting a change. Release history is in
+[CHANGELOG.md](https://github.com/ebarti/jobstreaming/blob/main/CHANGELOG.md).
 
 ## License and attribution
 
