@@ -39,6 +39,28 @@ jobs:
       - name: Build distributions
         run: poetry build
 
+      - name: Verify wheel through an isolated consumer install
+        shell: bash
+        run: |
+          consumer="${RUNNER_TEMP}/jobstreaming-wheel-consumer"
+          python -m venv "$consumer"
+          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.whl
+          observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
+          test "$observed" = "${GITHUB_REF_NAME#v}"
+          cd "$RUNNER_TEMP"
+          "$consumer/bin/python" -c 'from jobstreaming import SearchRequest, Site; assert SearchRequest(site_type=(Site.GOOGLE,)).sites == (Site.GOOGLE,)'
+
+      - name: Verify source distribution through an isolated consumer install
+        shell: bash
+        run: |
+          consumer="${RUNNER_TEMP}/jobstreaming-sdist-consumer"
+          python -m venv "$consumer"
+          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.tar.gz
+          observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
+          test "$observed" = "${GITHUB_REF_NAME#v}"
+          cd "$RUNNER_TEMP"
+          "$consumer/bin/python" -c 'from jobstreaming import SearchRequest, Site; assert SearchRequest(site_type=(Site.GOOGLE,)).sites == (Site.GOOGLE,)'
+
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
