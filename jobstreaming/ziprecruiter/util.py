@@ -1,3 +1,5 @@
+import math
+
 from jobstreaming.model import JobType
 
 
@@ -6,8 +8,8 @@ def add_params(scraper_input) -> dict[str, str | int]:
         "search": scraper_input.search_term,
         "location": scraper_input.location,
     }
-    if scraper_input.hours_old:
-        params["days"] = max(scraper_input.hours_old // 24, 1)
+    if scraper_input.hours_old is not None:
+        params["days"] = max(math.ceil(scraper_input.hours_old / 24), 1)
 
     job_type_map = {JobType.FULL_TIME: "full_time", JobType.PART_TIME: "part_time"}
     if scraper_input.job_type:
@@ -18,8 +20,7 @@ def add_params(scraper_input) -> dict[str, str | int]:
         params["zipapply"] = 1
     if scraper_input.is_remote:
         params["remote"] = 1
-    if scraper_input.distance:
-        params["radius"] = scraper_input.distance
+    params["radius"] = scraper_input.distance
 
     return {k: v for k, v in params.items() if v is not None}
 

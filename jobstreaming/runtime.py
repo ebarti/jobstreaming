@@ -69,6 +69,7 @@ class _AdapterMessage:
     error_type: str | None = None
     error_code: ErrorCode = ErrorCode.ADAPTER_FAILURE
     retryable: bool = False
+    retry_after: float | None = None
     reset_checkpoint: bool = False
     emitted_count: int = 0
 
@@ -92,13 +93,24 @@ class _CancellationController:
         self._stop_event = stop_event or threading.Event()
         self._cancel_event = cancel_event
         self._cancel_callback = cancel_callback
+        self._external_cancelled = threading.Event()
+        self._callback_lock = threading.Lock()
 
     @property
     def externally_cancelled(self) -> bool:
-        return bool(
-            (self._cancel_event is not None and self._cancel_event.is_set())
-            or (self._cancel_callback is not None and self._cancel_callback())
-        )
+        if self._external_cancelled.is_set():
+            return True
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            self._external_cancelled.set()
+            return True
+        if self._cancel_callback is None:
+            return False
+        with self._callback_lock:
+            if self._external_cancelled.is_set():
+                return True
+            if self._cancel_callback():
+                self._external_cancelled.set()
+        return self._external_cancelled.is_set()
 
     @property
     def cancelled(self) -> bool:
@@ -465,13 +477,17 @@ class SearchStream(Iterator[SearchEvent]):
                                 error_type=type(exc).__name__,
                                 error_code=error.code,
                                 retryable=error.retryable,
+                                retry_after=error.retry_after,
                                 reset_checkpoint=error.reset_checkpoint,
                                 emitted_count=context.emitted_count,
                             )
                         )
                         return
 
-                    delay = self.retry_backoff * (2**attempt)
+                    delay = max(
+                        self.retry_backoff * (2**attempt),
+                        error.retry_after or 0,
+                    )
                     context.emit_warning(
                         f"{type(exc).__name__}: {exc}; retrying "
                         f"({attempt + 1}/{self.max_retries}) in {delay:g}s"
@@ -508,6 +524,17 @@ class SearchStream(Iterator[SearchEvent]):
         if unsupported:
             context.emit_warning(
                 "Unsupported filters were ignored: " + ", ".join(sorted(unsupported))
+            )
+        supported_job_types = scraper.capabilities.supported_job_types
+        if (
+            self.request.job_type is not None
+            and "job_type" in scraper.capabilities.filters
+            and supported_job_types is not None
+            and self.request.job_type not in supported_job_types
+        ):
+            context.emit_warning(
+                "Unsupported job_type value was ignored: "
+                f"{self.request.job_type.canonical}"
             )
 
     def _emit_site_complete(self, site: Site, context: ScrapeContext) -> None:
@@ -620,6 +647,7 @@ class SearchStream(Iterator[SearchEvent]):
                     resume_state=freeze_state(message.state),
                     code=message.error_code,
                     retryable=message.retryable,
+                    retry_after=message.retry_after,
                     reset_checkpoint=message.reset_checkpoint,
                 )
                 self._total_errors += 1

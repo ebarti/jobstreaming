@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 from jobstreaming.exception import (
+    AuthenticationConfigurationError,
     InvalidRequestError,
     error_for_http_status,
     error_for_response_message,
 )
-from jobstreaming.glassdoor.constant import fallback_token, headers, query_template
+from jobstreaming.glassdoor.constant import headers, query_template
 from jobstreaming.glassdoor.util import (
     get_cursor_for_page,
     parse_compensation,
@@ -63,6 +65,7 @@ class Glassdoor(Scraper):
         proxies: list[str] | str | None = None,
         ca_cert: str | None = None,
         user_agent: str | None = None,
+        csrf_token: str | None = None,
     ):
         """
         Initializes GlassdoorScraper with the Glassdoor job search url
@@ -78,6 +81,7 @@ class Glassdoor(Scraper):
         self.max_pages = 30
         self._thread_local = threading.local()
         self._headers: dict[str, str] = {}
+        self.csrf_token = csrf_token or os.getenv("JOBSTREAMING_GLASSDOOR_CSRF_TOKEN")
 
     def scrape(
         self, scraper_input: ScraperInput, context: ScrapeContext | None = None
@@ -91,12 +95,15 @@ class Glassdoor(Scraper):
         context = ScrapeContext.local(self.site, scraper_input, context)
         self.base_url = self.scraper_input.country.get_glassdoor_url()
 
-        self.session = create_session(
-            proxies=self.proxies, ca_cert=self.ca_cert, has_retry=True
-        )
-        token = self._get_csrf_token()
+        self.session = create_session(proxies=self.proxies, ca_cert=self.ca_cert)
+        token = self.csrf_token or self._get_csrf_token()
+        if not token:
+            raise AuthenticationConfigurationError(
+                "Glassdoor could not obtain a CSRF token; configure "
+                "JOBSTREAMING_GLASSDOOR_CSRF_TOKEN if live discovery is unavailable"
+            )
         self._headers = headers.copy()
-        self._headers["gd-csrf-token"] = token if token else fallback_token
+        self._headers["gd-csrf-token"] = token
         if self.user_agent:
             self._headers["user-agent"] = self.user_agent
         domain = self.base_url.rstrip("/")
@@ -112,12 +119,22 @@ class Glassdoor(Scraper):
             raise InvalidRequestError("Glassdoor location could not be resolved")
         job_list: list[JobPost] = []
         state = context.resume_state
-        page = int(state.get("page", 1 + (scraper_input.offset // self.jobs_per_page)))
+        initial_page = 1 + (scraper_input.offset // self.jobs_per_page)
+        page = int(state.get("page", initial_page))
         cursor = state.get("cursor")
-        last_page = min(scraper_input.max_pages, self.max_pages)
-        while context.should_continue and page <= last_page:
-            log.info(f"search page: {page} / {last_page}")
-            page_state = {"page": page, "cursor": cursor}
+        pages_fetched = int(state.get("pages_fetched", max(0, page - initial_page)))
+        page_budget = min(scraper_input.max_pages, self.max_pages)
+        while (
+            context.should_continue
+            and pages_fetched < page_budget
+            and page <= self.max_pages
+        ):
+            log.info(f"search page: {pages_fetched + 1} / {page_budget}")
+            page_state = {
+                "page": page,
+                "cursor": cursor,
+                "pages_fetched": pages_fetched,
+            }
             jobs, next_cursor, raw_count = self._fetch_jobs_page(
                 scraper_input,
                 location_id,
@@ -129,9 +146,14 @@ class Glassdoor(Scraper):
             )
             job_list.extend(jobs)
             context.emit_progress(
-                {"page": page + 1, "cursor": next_cursor},
+                {
+                    "page": page + 1,
+                    "cursor": next_cursor,
+                    "pages_fetched": pages_fetched + 1,
+                },
                 f"completed Glassdoor page {page}",
             )
+            pages_fetched += 1
             if raw_count == 0 or not next_cursor:
                 break
             cursor = next_cursor
@@ -164,6 +186,7 @@ class Glassdoor(Scraper):
                 "Glassdoor",
                 response.status_code,
                 cursor_active=cursor is not None,
+                retry_after=(getattr(response, "headers", {}) or {}).get("Retry-After"),
             )
         res_json = response.json()[0]
         if "errors" in res_json:
@@ -216,6 +239,12 @@ class Glassdoor(Scraper):
             f"{self.base_url}Job/computer-science-jobs.htm",
             timeout_seconds=self.scraper_input.request_timeout,
         )
+        if res.status_code not in range(200, 400):
+            raise error_for_http_status(
+                "Glassdoor",
+                res.status_code,
+                retry_after=(getattr(res, "headers", {}) or {}).get("Retry-After"),
+            )
         pattern = r'"token":\s*"([^"]+)"'
         matches = re.findall(pattern, res.text)
         token = None
@@ -343,15 +372,11 @@ class Glassdoor(Scraper):
         url = f"{self.base_url}findPopularLocationAjax.htm?maxLocationsToReturn=10&term={location}"
         res = self.session.get(url, timeout_seconds=self.scraper_input.request_timeout)
         if res.status_code != 200:
-            if res.status_code == 429:
-                err = "429 Response - Blocked by Glassdoor for too many requests"
-                log.error(err)
-                return None, None
-            else:
-                err = f"Glassdoor response status code {res.status_code}"
-                err += f" - {res.text}"
-                log.error(f"Glassdoor response status code {res.status_code}")
-                return None, None
+            raise error_for_http_status(
+                "Glassdoor",
+                res.status_code,
+                retry_after=(getattr(res, "headers", {}) or {}).get("Retry-After"),
+            )
         items = res.json()
 
         if not items:

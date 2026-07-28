@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import re
 from datetime import date, datetime, timedelta
 from urllib.parse import urljoin
 
-from jobstreaming.exception import NaukriException
+from jobstreaming.exception import (
+    AuthenticationConfigurationError,
+    error_for_http_status,
+)
 from jobstreaming.model import (
     AdapterCapabilities,
     Compensation,
@@ -58,6 +62,7 @@ class Naukri(Scraper):
         proxies: list[str] | str | None = None,
         ca_cert: str | None = None,
         user_agent: str | None = None,
+        nkparam: str | None = None,
     ) -> None:
         super().__init__(
             Site.NAUKRI,
@@ -69,11 +74,12 @@ class Naukri(Scraper):
             proxies=self.proxies,
             ca_cert=ca_cert,
             is_tls=False,
-            has_retry=True,
-            delay=5,
             clear_cookies=True,
         )
         request_headers = naukri_headers.copy()
+        self.nkparam = nkparam or os.getenv("JOBSTREAMING_NAUKRI_NKPARAM")
+        if self.nkparam:
+            request_headers["Nkparam"] = self.nkparam
         if user_agent:
             request_headers["user-agent"] = user_agent
         self.session.headers.update(request_headers)
@@ -86,18 +92,25 @@ class Naukri(Scraper):
         context = ScrapeContext.local(self.site, scraper_input, context)
         if not scraper_input.search_term:
             raise ValueError("Naukri requires a non-empty search_term")
+        if not self.nkparam:
+            raise AuthenticationConfigurationError(
+                "Naukri requires JOBSTREAMING_NAUKRI_NKPARAM"
+            )
+        self.session.headers["Nkparam"] = self.nkparam
 
         emitted: list[JobPost] = []
         state = context.resume_state
-        page = int(state.get("page", (scraper_input.offset // self.jobs_per_page) + 1))
+        initial_page = (scraper_input.offset // self.jobs_per_page) + 1
+        page = int(state.get("page", initial_page))
         page_skip = int(
             state.get("page_skip", scraper_input.offset % self.jobs_per_page)
         )
         raw_seen = int(
             state.get("raw_seen", (page - 1) * self.jobs_per_page + page_skip)
         )
+        pages_fetched = int(state.get("pages_fetched", max(0, page - initial_page)))
 
-        while context.should_continue and page <= scraper_input.max_pages:
+        while context.should_continue and pages_fetched < scraper_input.max_pages:
             log.info(f"Fetching Naukri page {page}")
             params = self._search_params(scraper_input, page)
             response = self.session.get(
@@ -106,8 +119,12 @@ class Naukri(Scraper):
                 timeout=scraper_input.request_timeout,
             )
             if not 200 <= response.status_code < 400:
-                raise NaukriException(
-                    f"Naukri API returned HTTP {response.status_code}"
+                raise error_for_http_status(
+                    "Naukri",
+                    response.status_code,
+                    retry_after=(getattr(response, "headers", {}) or {}).get(
+                        "Retry-After"
+                    ),
                 )
             job_details = response.json().get("jobDetails", [])
             if not isinstance(job_details, list) or not job_details:
@@ -127,6 +144,7 @@ class Naukri(Scraper):
                         "page": page,
                         "page_skip": index + 1,
                         "raw_seen": absolute_index + 1,
+                        "pages_fetched": pages_fetched,
                     }
                     if absolute_index >= scraper_input.offset and context.emit_job(
                         job_post, next_state
@@ -141,9 +159,15 @@ class Naukri(Scraper):
 
             raw_seen = page_raw_start + len(job_details)
             context.emit_progress(
-                {"page": page + 1, "page_skip": 0, "raw_seen": raw_seen},
+                {
+                    "page": page + 1,
+                    "page_skip": 0,
+                    "raw_seen": raw_seen,
+                    "pages_fetched": pages_fetched + 1,
+                },
                 f"completed Naukri page {page}",
             )
+            pages_fetched += 1
             if not context.should_continue or len(job_details) < self.jobs_per_page:
                 break
             page += 1

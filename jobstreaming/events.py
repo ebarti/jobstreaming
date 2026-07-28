@@ -100,6 +100,7 @@ class ErrorEvent:
     retryable: bool = False
     reset_checkpoint: bool = False
     type: EventType = EventType.ERROR
+    retry_after: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

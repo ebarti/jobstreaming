@@ -1,10 +1,35 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from enum import Enum
 
 from requests import exceptions as requests_exceptions
+
+MAX_RETRY_AFTER_SECONDS = 300.0
+
+
+def parse_retry_after(value: str | int | float | None) -> float | None:
+    """Parse an HTTP Retry-After value and bound coordinator sleep time."""
+
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(str(value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+    if not math.isfinite(seconds):
+        return None
+    return min(max(0.0, seconds), MAX_RETRY_AFTER_SECONDS)
 
 
 class ErrorCode(str, Enum):
@@ -23,6 +48,15 @@ class JobStreamingError(RuntimeError):
     code = ErrorCode.ADAPTER_FAILURE
     retryable = False
     reset_checkpoint = False
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        retry_after: str | int | float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after = parse_retry_after(retry_after)
 
 
 class TransientNetworkError(JobStreamingError):
@@ -105,6 +139,7 @@ class ErrorInfo:
     code: ErrorCode
     retryable: bool
     reset_checkpoint: bool
+    retry_after: float | None = None
 
 
 _HTTP_STATUS = re.compile(r"\bHTTP\s+(\d{3})\b", re.IGNORECASE)
@@ -115,18 +150,22 @@ def error_for_http_status(
     status_code: int,
     *,
     cursor_active: bool = False,
+    retry_after: str | int | float | None = None,
 ) -> JobStreamingError:
     """Translate an HTTP status at an adapter boundary into a stable failure."""
 
     message = f"{board} returned HTTP {status_code}"
     if status_code == 429:
-        return RateLimitError(f"{board} rate limited the search")
+        return RateLimitError(
+            f"{board} rate limited the search",
+            retry_after=retry_after,
+        )
     if status_code in (401, 403):
         return AuthenticationConfigurationError(message)
     if cursor_active and status_code == 410:
         return CursorExpiredError(f"{board} rejected an expired cursor")
     if status_code in (408, 425) or 500 <= status_code < 600:
-        return TransientNetworkError(message)
+        return TransientNetworkError(message, retry_after=retry_after)
     if 400 <= status_code < 500:
         return InvalidRequestError(message)
     return AdapterFailureError(message)
@@ -163,7 +202,12 @@ def classify_exception(exc: Exception) -> ErrorInfo:
     """Classify an adapter exception without guessing that unknowns are retryable."""
 
     if isinstance(exc, JobStreamingError) and exc.code is not ErrorCode.ADAPTER_FAILURE:
-        return ErrorInfo(exc.code, exc.retryable, exc.reset_checkpoint)
+        return ErrorInfo(
+            exc.code,
+            exc.retryable,
+            exc.reset_checkpoint,
+            exc.retry_after,
+        )
 
     if isinstance(
         exc,
@@ -177,7 +221,11 @@ def classify_exception(exc: Exception) -> ErrorInfo:
 
     if isinstance(
         exc,
-        (requests_exceptions.Timeout, requests_exceptions.ConnectionError),
+        (
+            requests_exceptions.Timeout,
+            requests_exceptions.ConnectionError,
+            requests_exceptions.RetryError,
+        ),
     ) or type(exc).__module__.startswith("tls_client"):
         return ErrorInfo(ErrorCode.TRANSIENT_NETWORK, True, False)
 
@@ -185,11 +233,17 @@ def classify_exception(exc: Exception) -> ErrorInfo:
         response = exc.response
         status_code = response.status_code if response is not None else None
         if status_code is not None:
-            classified = error_for_http_status("Adapter", status_code)
+            headers = getattr(response, "headers", {}) or {}
+            classified = error_for_http_status(
+                "Adapter",
+                status_code,
+                retry_after=headers.get("Retry-After"),
+            )
             return ErrorInfo(
                 classified.code,
                 classified.retryable,
                 classified.reset_checkpoint,
+                classified.retry_after,
             )
 
     if isinstance(exc, (TypeError, ValueError)):
@@ -203,6 +257,7 @@ def classify_exception(exc: Exception) -> ErrorInfo:
             classified.code,
             classified.retryable,
             classified.reset_checkpoint,
+            classified.retry_after,
         )
     normalized = message.casefold()
     if "rate limit" in normalized or "too many requests" in normalized:
