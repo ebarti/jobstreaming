@@ -16,6 +16,25 @@ from jobstreaming.salary import (
 )
 
 
+def _canonical_salary_provenance(
+    source: SalarySource,
+    provenance: SalaryProvenance | None,
+) -> SalaryProvenance:
+    return SalaryProvenance(
+        source=source,
+        confidence=(
+            SalaryConfidence.HIGH
+            if source is SalarySource.DIRECT_DATA
+            else SalaryConfidence.MEDIUM
+        ),
+        evidence=(
+            provenance.evidence
+            if source is SalarySource.DESCRIPTION and provenance is not None
+            else None
+        ),
+    )
+
+
 def normalize_job(job: JobPost, request: SearchRequest) -> JobPost:
     compensation = job.compensation
     source = job.salary_source
@@ -23,14 +42,7 @@ def normalize_job(job: JobPost, request: SearchRequest) -> JobPost:
 
     if compensation is not None:
         source = source or SalarySource.DIRECT_DATA
-        provenance = provenance or SalaryProvenance(
-            source=source,
-            confidence=(
-                SalaryConfidence.HIGH
-                if source is SalarySource.DIRECT_DATA
-                else SalaryConfidence.MEDIUM
-            ),
-        )
+        provenance = _canonical_salary_provenance(source, provenance)
         if request.enforce_annual_salary:
             compensation = annualize_compensation(compensation)
     elif (

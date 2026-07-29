@@ -163,6 +163,24 @@ _MAJOR_CURRENCY_MINIMUM = {
     CompensationInterval.MONTHLY: 100,
     CompensationInterval.YEARLY: 1_000,
 }
+# Conservative annual floors (INR 60k, BDT 36k) projected across pay intervals.
+# Rounding upward intentionally prefers rejecting ambiguous low-value text.
+_REGIONAL_CURRENCY_MINIMUM = {
+    "INR": {
+        CompensationInterval.HOURLY: 40,
+        CompensationInterval.DAILY: 300,
+        CompensationInterval.WEEKLY: 1_500,
+        CompensationInterval.MONTHLY: 5_000,
+        CompensationInterval.YEARLY: 60_000,
+    },
+    "BDT": {
+        CompensationInterval.HOURLY: 20,
+        CompensationInterval.DAILY: 150,
+        CompensationInterval.WEEKLY: 750,
+        CompensationInterval.MONTHLY: 3_000,
+        CompensationInterval.YEARLY: 36_000,
+    },
+}
 _ANNUAL_FACTORS = {
     CompensationInterval.HOURLY: 2_080,
     CompensationInterval.DAILY: 260,
@@ -279,11 +297,17 @@ def _nearest_interval(
         for match in pattern.finditer(text, window_start, window_end):
             if match.end() <= salary_range.start():
                 distance = salary_range.start() - match.end()
+                intervening = text[match.end() : salary_range.start()]
             elif match.start() >= salary_range.end():
                 distance = match.start() - salary_range.end()
+                intervening = text[salary_range.end() : match.start()]
             else:
                 distance = 0
-            if distance <= 32:
+                intervening = ""
+            if (
+                distance <= 32
+                and _SENTENCE_BOUNDARY_PATTERN.search(intervening) is None
+            ):
                 candidates.append((distance, interval, match))
     if not candidates:
         return None
@@ -362,11 +386,20 @@ def _plausible_range(
 ) -> bool:
     minimum_value = minimum[0] * minimum[1]
     maximum_value = maximum[0] * maximum[1]
+    regional_minimums = _REGIONAL_CURRENCY_MINIMUM.get(currency)
     minimum_allowed = (
-        _MAJOR_CURRENCY_MINIMUM[interval] if currency in _MAJOR_CURRENCIES else 1
+        regional_minimums[interval]
+        if regional_minimums is not None
+        else (
+            _MAJOR_CURRENCY_MINIMUM[interval] if currency in _MAJOR_CURRENCIES else None
+        )
     )
     return (
-        minimum_allowed <= minimum_value < maximum_value <= _INTERVAL_MAXIMUM[interval]
+        minimum_allowed is not None
+        and minimum_allowed
+        <= minimum_value
+        < maximum_value
+        <= _INTERVAL_MAXIMUM[interval]
         and maximum_value / minimum_value <= 20
     )
 

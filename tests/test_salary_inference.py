@@ -175,6 +175,11 @@ def test_conservative_salary_parser_handles_explicit_multilingual_ranges(
         ("Contract value: USD 50,000 - 70,000 per year", None),
         ("Salary budget: USD 50,000 - 70,000 per year", None),
         ("USD 50,000 - 70,000 per year", None),
+        (
+            "Salary: USD 50,000 - 70,000\n" "20 vacation days are available per year",
+            None,
+        ),
+        ("Salary: USD 50,000 - 70,000\nSchedule per week", None),
     ],
 )
 def test_conservative_salary_parser_rejects_ambiguous_or_non_salary_ranges(
@@ -182,6 +187,60 @@ def test_conservative_salary_parser_rejects_ambiguous_or_non_salary_ranges(
     currency_hint: str | None,
 ) -> None:
     assert infer_salary_from_text(text, currency_hint=currency_hint) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Salary: ₹20 - ₹30 per hour",
+        "Salary: INR 50 - 100 per day",
+        "Salary: INR 100 - 200 per week",
+        "Salary: INR 500 - 900 per month",
+        "Salary: INR 1,000 - 2,000 per year",
+        "Salary: ৳10 - ৳15 per hour",
+        "Salary: BDT 50 - 100 per day",
+        "Salary: BDT 100 - 200 per week",
+        "Salary: BDT 500 - 900 per month",
+        "Salary: BDT 1,000 - 2,000 per year",
+    ],
+)
+def test_conservative_salary_parser_rejects_tiny_inr_and_bdt_ranges(
+    text: str,
+) -> None:
+    assert infer_salary_from_text(text) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "Salary: ₹200 - ₹300 per hour",
+            Compensation(
+                interval=CompensationInterval.HOURLY,
+                min_amount=200,
+                max_amount=300,
+                currency="INR",
+            ),
+        ),
+        (
+            "Salary: BDT 20,000 - 30,000 per month",
+            Compensation(
+                interval=CompensationInterval.MONTHLY,
+                min_amount=20_000,
+                max_amount=30_000,
+                currency="BDT",
+            ),
+        ),
+    ],
+)
+def test_conservative_salary_parser_keeps_plausible_inr_and_bdt_ranges(
+    text: str,
+    expected: Compensation,
+) -> None:
+    inference = infer_salary_from_text(text)
+
+    assert inference is not None
+    assert inference.compensation == expected
 
 
 def test_description_salary_inference_is_explicit_and_carries_provenance() -> None:
@@ -334,6 +393,64 @@ def test_salary_provenance_requires_matching_compensation_metadata() -> None:
             salary_source=SalarySource.DIRECT_DATA,
             salary_provenance=provenance,
         )
+
+
+@pytest.mark.parametrize(
+    ("source", "confidence", "evidence"),
+    [
+        (SalarySource.DIRECT_DATA, SalaryConfidence.MEDIUM, None),
+        (SalarySource.DIRECT_DATA, SalaryConfidence.HIGH, "board payload"),
+        (SalarySource.ESTIMATED, SalaryConfidence.HIGH, None),
+        (SalarySource.ESTIMATED, SalaryConfidence.MEDIUM, "board estimate"),
+        (
+            SalarySource.DESCRIPTION,
+            SalaryConfidence.HIGH,
+            "USD 80,000 - 100,000 per year",
+        ),
+        (SalarySource.DESCRIPTION, SalaryConfidence.MEDIUM, None),
+    ],
+)
+def test_salary_provenance_enforces_source_confidence_and_evidence_contract(
+    source: SalarySource,
+    confidence: SalaryConfidence,
+    evidence: str | None,
+) -> None:
+    with pytest.raises(ValidationError, match="salary provenance"):
+        SalaryProvenance(
+            source=source,
+            confidence=confidence,
+            evidence=evidence,
+        )
+
+
+def test_normalize_job_canonicalizes_unvalidated_structured_provenance() -> None:
+    contradictory = SalaryProvenance.model_construct(
+        source=SalarySource.DIRECT_DATA,
+        confidence=SalaryConfidence.MEDIUM,
+        evidence="must not survive normalization",
+    )
+    job = JobPost.model_construct(
+        title="Engineer",
+        job_url="https://example.test/jobs/contradictory-provenance",
+        compensation=Compensation(
+            interval=CompensationInterval.YEARLY,
+            min_amount=80_000,
+            max_amount=100_000,
+            currency="USD",
+        ),
+        salary_source=SalarySource.DIRECT_DATA,
+        salary_provenance=contradictory,
+    )
+
+    normalized = normalize_job(
+        job,
+        SearchRequest(site_type=(Site.INDEED,)),
+    )
+
+    assert normalized.salary_provenance == SalaryProvenance(
+        source=SalarySource.DIRECT_DATA,
+        confidence=SalaryConfidence.HIGH,
+    )
 
 
 def test_request_builder_and_fingerprint_include_salary_policy() -> None:

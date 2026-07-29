@@ -316,6 +316,26 @@ class SalaryProvenance(FrozenModel):
             raise ValueError("salary evidence cannot be empty")
         return normalized
 
+    @model_validator(mode="after")
+    def validate_source_contract(self) -> SalaryProvenance:
+        expected_confidence = (
+            SalaryConfidence.HIGH
+            if self.source is SalarySource.DIRECT_DATA
+            else SalaryConfidence.MEDIUM
+        )
+        if self.confidence is not expected_confidence:
+            raise ValueError("salary provenance confidence does not match its source")
+        if self.source is SalarySource.DESCRIPTION:
+            if self.evidence is None:
+                raise ValueError(
+                    "salary provenance from a description requires evidence"
+                )
+        elif self.evidence is not None:
+            raise ValueError(
+                "salary provenance evidence is only valid for description inference"
+            )
+        return self
+
 
 class JobPost(FrozenModel):
     id: str | None = None
