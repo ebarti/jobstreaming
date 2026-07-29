@@ -377,6 +377,9 @@ poetry run python scripts/check_coverage.py
 poetry run ruff check jobstreaming tests scripts
 poetry run black --check jobstreaming tests scripts
 poetry build
+python scripts/verify_release_artifacts.py \
+  --expected-version "$(poetry version --short)" \
+  --dist-dir dist
 ```
 
 The test suite is offline: it validates domain invariants, concurrency, failure
@@ -403,7 +406,9 @@ Do not place credentials or vulnerability details in an issue. See
 reporting and supported-version policy, and
 [CONTRIBUTING.md](https://github.com/ebarti/jobstreaming/blob/main/CONTRIBUTING.md)
 before submitting a change. Release history is in
-[CHANGELOG.md](https://github.com/ebarti/jobstreaming/blob/main/CHANGELOG.md).
+[CHANGELOG.md](https://github.com/ebarti/jobstreaming/blob/main/CHANGELOG.md), and the
+maintainer release contract is in
+[RELEASING.md](https://github.com/ebarti/jobstreaming/blob/main/RELEASING.md).
 
 ## License and attribution
 

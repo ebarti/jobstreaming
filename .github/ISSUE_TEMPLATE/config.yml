@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ebarti/jobstreaming/security/advisories/new
+    about: Send suspected vulnerabilities privately; never disclose credentials in a public issue.
+  - name: Read usage and compatibility guidance
+    url: https://github.com/ebarti/jobstreaming#readme
+    about: Review supported adapters, delivery semantics, and alpha limitations before filing.

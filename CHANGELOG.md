@@ -11,7 +11,10 @@ still change when upstream boards drift.
 - Value-level adapter capability warnings for unsupported job types.
 - Public security, contribution, support, and adapter-configuration guidance.
 - `Retry-After` metadata on retryable terminal error events.
-- Isolated wheel and source-distribution consumer checks in the release workflow.
+- Isolated wheel and source-distribution consumer checks in CI and the release
+  workflow.
+- SHA-256 release checksums and GitHub-hosted SLSA build provenance for wheel and
+  source distributions.
 
 ### Changed
 
@@ -26,6 +29,8 @@ still change when upstream boards drift.
   ignoring it.
 - Indeed, Naukri, ZipRecruiter, and Glassdoor no longer use package-embedded shared
   credentials or fallback tokens.
+- PyPI releases use a separated, least-privilege Trusted Publishing job with
+  attestations enabled.
 
 ### Fixed
 
