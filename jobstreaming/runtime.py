@@ -13,10 +13,13 @@ from functools import partial
 from typing import Any, TypeVar, cast
 
 from jobstreaming.checkpoint import (
+    AtomicCheckpointStore,
     CheckpointCompatibilityError,
     CheckpointConflictError,
     CheckpointMismatchError,
     CheckpointStore,
+    CheckpointWrite,
+    IncrementalCheckpointStore,
     MemoryCheckpointStore,
 )
 from jobstreaming.events import (
@@ -468,6 +471,14 @@ class SearchStream(Iterator[SearchEvent]):
         self._terminal_delivered = False
         self._closed = False
         self._checkpoint = self._load_checkpoint(resume=resume)
+        self._acknowledged_seen_keys = {
+            site_name: list(adapter.seen_job_keys)
+            for site_name, adapter in self._checkpoint.adapters.items()
+        }
+        self._acknowledged_seen_key_sets = {
+            site_name: set(keys)
+            for site_name, keys in self._acknowledged_seen_keys.items()
+        }
         self._start_workers()
 
     def _load_checkpoint(self, *, resume: bool) -> SearchCheckpoint:
@@ -475,7 +486,15 @@ class SearchStream(Iterator[SearchEvent]):
             site: self.registry.cursor_schema_version(site)
             for site in self.request.sites
         }
-        loaded = self.checkpoint_store.load() if resume else None
+        if not resume:
+            checkpoint = SearchCheckpoint.for_request(self.request, cursor_versions)
+            if isinstance(self.checkpoint_store, AtomicCheckpointStore):
+                self.checkpoint_store.replace(checkpoint)
+            else:
+                self.checkpoint_store.clear()
+                self.checkpoint_store.save(checkpoint)
+            return checkpoint
+        loaded = self.checkpoint_store.load()
         if loaded is None:
             checkpoint = SearchCheckpoint.for_request(self.request, cursor_versions)
             self.checkpoint_store.save(checkpoint)
@@ -790,7 +809,20 @@ class SearchStream(Iterator[SearchEvent]):
 
     @property
     def checkpoint(self) -> SearchCheckpoint:
-        return self._checkpoint.model_copy(deep=True)
+        adapters = {
+            site_name: adapter.model_copy(
+                update={
+                    "seen_job_keys": tuple(
+                        self._acknowledged_seen_keys.get(site_name, ())
+                    )
+                }
+            )
+            for site_name, adapter in self._checkpoint.adapters.items()
+        }
+        return self._checkpoint.model_copy(
+            update={"adapters": adapters},
+            deep=True,
+        )
 
     @property
     def diagnostics(self) -> StreamDiagnostics:
@@ -988,20 +1020,45 @@ class SearchStream(Iterator[SearchEvent]):
         if self._last_acknowledged:
             return
 
+        incremental_store = (
+            self.checkpoint_store
+            if isinstance(self.checkpoint_store, IncrementalCheckpointStore)
+            else None
+        )
         adapters = dict(self._checkpoint.adapters)
+        adapter_site: Site | None = None
+        new_seen_job_key: str | None = None
         if isinstance(
             event,
             (JobEvent, ProgressEvent, WarningEvent, ErrorEvent, SiteCompleteEvent),
         ):
+            adapter_site = event.site
             existing = adapters[event.site.value]
-            seen = list(existing.seen_job_keys)
-            if isinstance(event, JobEvent) and event.job_key not in seen:
-                seen.append(event.job_key)
+            seen_keys = self._acknowledged_seen_keys[event.site.value]
+            seen_key_set = self._acknowledged_seen_key_sets[event.site.value]
+            if isinstance(event, JobEvent) and event.job_key not in seen_key_set:
+                new_seen_job_key = event.job_key
+            emitted_count = existing.emitted_count + (
+                1 if new_seen_job_key is not None else 0
+            )
             adapters[event.site.value] = existing.model_copy(
                 update={
                     "state": thaw_state(event.resume_state),
-                    "seen_job_keys": tuple(seen),
-                    "emitted_count": len(seen),
+                    "seen_job_keys": (
+                        existing.seen_job_keys
+                        if incremental_store is not None
+                        else tuple(
+                            [
+                                *seen_keys,
+                                *(
+                                    (new_seen_job_key,)
+                                    if new_seen_job_key is not None
+                                    else ()
+                                ),
+                            ]
+                        )
+                    ),
+                    "emitted_count": emitted_count,
                     "completed": isinstance(event, SiteCompleteEvent),
                     "updated_at": datetime.now(timezone.utc),
                 }
@@ -1021,10 +1078,22 @@ class SearchStream(Iterator[SearchEvent]):
             }
         )
         try:
-            self.checkpoint_store.save(checkpoint)
+            if incremental_store is None:
+                self.checkpoint_store.save(checkpoint)
+            else:
+                incremental_store.save_incremental(
+                    CheckpointWrite(
+                        checkpoint=checkpoint,
+                        adapter_site=adapter_site,
+                        new_seen_job_key=new_seen_job_key,
+                    )
+                )
         except CheckpointConflictError:
             self.close()
             raise
+        if new_seen_job_key is not None and adapter_site is not None:
+            self._acknowledged_seen_keys[adapter_site.value].append(new_seen_job_key)
+            self._acknowledged_seen_key_sets[adapter_site.value].add(new_seen_job_key)
         self._checkpoint = checkpoint
         self._last_acknowledged = True
 

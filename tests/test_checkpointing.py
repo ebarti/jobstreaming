@@ -164,6 +164,36 @@ def test_checkpoint_rejects_a_different_request() -> None:
         stream_search(changed, registry=_registry(), checkpoint_store=store)
 
 
+def test_resume_false_preserves_generic_store_clear_then_save_contract() -> None:
+    calls: list[str] = []
+
+    class GenericStore:
+        checkpoint = SearchCheckpoint.for_request(
+            SearchRequest(site_type=(Site.INDEED,), search_term="python")
+        )
+
+        def load(self) -> SearchCheckpoint | None:
+            return self.checkpoint
+
+        def save(self, checkpoint: SearchCheckpoint) -> None:
+            calls.append("save")
+            self.checkpoint = checkpoint
+
+        def clear(self) -> None:
+            calls.append("clear")
+            self.checkpoint = None
+
+    stream = stream_search(
+        SearchRequest(site_type=(Site.INDEED,), search_term="rust"),
+        registry=_registry(),
+        checkpoint_store=GenericStore(),
+        resume=False,
+    )
+    stream.close()
+
+    assert calls[:2] == ["clear", "save"]
+
+
 def test_json_checkpoint_round_trip(tmp_path) -> None:
     path = tmp_path / "nested" / "checkpoint.json"
     store = JsonFileCheckpointStore(path)

@@ -13,6 +13,9 @@ still change when upstream boards drift.
 - `Retry-After` metadata on retryable terminal error events.
 - Isolated wheel and source-distribution consumer checks in the release workflow.
 - Bounded `wait_closed()` lifecycle diagnostics and adapter transport ownership.
+- Transactional `SqliteCheckpointStore` persistence with compare-and-swap revisions
+  and incremental seen-key acknowledgements.
+- An `AtomicCheckpointStore` capability for all-or-nothing checkpoint replacement.
 
 ### Changed
 
@@ -32,6 +35,9 @@ still change when upstream boards drift.
 
 ### Fixed
 
+- SQLite replacement now rolls back to the previous checkpoint when reseeding fails,
+  rejects future schemas before creating current tables, and closes connections when
+  setup fails.
 - ZipRecruiter rounds partial-day age filters up and preserves an explicit zero-mile
   radius.
 - Unsupported Indeed and LinkedIn job-type values are omitted rather than raised or
