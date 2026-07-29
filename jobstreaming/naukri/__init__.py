@@ -20,9 +20,12 @@ from jobstreaming.model import (
     JobPost,
     JobResponse,
     Location,
+    Resumable,
+    ResumeGranularity,
     SalarySource,
     Scraper,
     ScraperInput,
+    SearchFilter,
     Site,
 )
 from jobstreaming.naukri.constant import headers as naukri_headers
@@ -50,11 +53,15 @@ class Naukri(Scraper):
     jobs_per_page = 20
     capabilities = AdapterCapabilities(
         filters=frozenset(
-            {"location", "is_remote", "offset", "hours_old", "description_format"}
+            {
+                SearchFilter.LOCATION,
+                SearchFilter.IS_REMOTE,
+                SearchFilter.OFFSET,
+                SearchFilter.HOURS_OLD,
+                SearchFilter.DESCRIPTION_FORMAT,
+            }
         ),
-        supports_resume=True,
-        resume_granularity="page",
-        cursor_schema_version=1,
+        resume=Resumable(granularity=ResumeGranularity.PAGE),
     )
 
     def __init__(

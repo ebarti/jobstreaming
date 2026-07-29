@@ -11,11 +11,22 @@ still change when upstream boards drift.
 - Value-level adapter capability warnings for unsupported job types.
 - Public security, contribution, support, and adapter-configuration guidance.
 - `Retry-After` metadata on retryable terminal error events.
-- Isolated wheel and source-distribution consumer checks in the release workflow.
+- Isolated wheel and source-distribution consumer checks in CI and the release
+  workflow.
 - Bounded `wait_closed()` lifecycle diagnostics and adapter transport ownership.
 - Transactional `SqliteCheckpointStore` persistence with compare-and-swap revisions
   and incremental seen-key acknowledgements.
 - An `AtomicCheckpointStore` capability for all-or-nothing checkpoint replacement.
+- SHA-256 release checksums and GitHub-hosted SLSA build provenance for wheel and
+  source distributions.
+- Open, validated custom adapter identifiers plus an `Adapter` protocol and offline
+  `AdapterTestKit`.
+- Typed search-filter and resume-capability declarations, a `py.typed` marker, and a
+  static type-check gate for the SDK/core runtime surface.
+- A `batch` extra and typed `MissingOptionalDependencyError` for the optional
+  DataFrame compatibility API.
+- Explicit conservative description-salary inference with multilingual interval and
+  currency parsing plus typed provenance and confidence metadata.
 
 ### Changed
 
@@ -32,6 +43,17 @@ still change when upstream boards drift.
   ignoring it.
 - Indeed, Naukri, ZipRecruiter, and Glassdoor no longer use package-embedded shared
   credentials or fallback tokens.
+- Runtime adapter calls no longer inspect `scrape` signatures; legacy signatures are
+  isolated behind a deprecated registration bridge.
+- Pandas is no longer installed or imported by the default streaming package;
+  `jobstreaming[batch]` preserves the existing `scrape_jobs` DataFrame behavior.
+- Description salary extraction is now off by default instead of implicitly applying
+  a USD numeric-threshold heuristic; opt in with
+  `description_salary_policy="conservative"`.
+- Structured board compensation always takes precedence over description inference,
+  and batch rows expose flattened salary provenance fields.
+- PyPI releases use a separated, least-privilege Trusted Publishing job with
+  attestations enabled.
 
 ### Fixed
 
@@ -44,6 +66,13 @@ still change when upstream boards drift.
   radius.
 - Unsupported Indeed and LinkedIn job-type values are omitted rather than raised or
   sent as empty parameters.
+- Legacy adapter bridges preserve registration cursor versions and non-resume
+  capability declarations, and forward lifecycle cleanup to wrapped adapters.
+- Resume granularities retain legacy/custom values through a normalized, open value
+  object.
+- Adapter factories and instances fail with typed contract errors when identifiers,
+  capabilities, or scrape callables are malformed.
+- Public protocol annotations remain resolvable from installed distributions.
 
 ## [0.0.2] - 2026-07-17
 

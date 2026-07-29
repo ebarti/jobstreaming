@@ -1,0 +1,39 @@
+[
+  {
+    "data": {
+      "jobListings": {
+        "jobListings": [
+          {
+            "jobview": {
+              "job": {
+                "listingId": 9001,
+                "jobTitleText": "Platform Engineer"
+              },
+              "header": {
+                "employerNameFromSearch": "Example Systems",
+                "employer": {"id": 42},
+                "locationName": "Madrid, Spain",
+                "locationType": "CITY",
+                "ageInDays": 2,
+                "payPeriod": "ANNUAL",
+                "payCurrency": "EUR",
+                "payPeriodAdjustedPay": {
+                  "p10": 70000,
+                  "p90": 90000
+                },
+                "salarySource": "Employer provided",
+                "adOrderSponsorshipLevel": "Organic"
+              },
+              "overview": {
+                "squareLogoUrl": "https://example.test/assets/logo.png"
+              }
+            }
+          }
+        ],
+        "paginationCursors": [
+          {"pageNumber": 2, "cursor": "fixture-next"}
+        ]
+      }
+    }
+  }
+]

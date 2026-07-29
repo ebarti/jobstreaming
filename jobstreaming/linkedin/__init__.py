@@ -28,9 +28,12 @@ from jobstreaming.model import (
     JobResponse,
     JobType,
     Location,
+    Resumable,
+    ResumeGranularity,
     SalarySource,
     Scraper,
     ScraperInput,
+    SearchFilter,
     Site,
 )
 from jobstreaming.runtime import ScrapeContext
@@ -55,14 +58,14 @@ class LinkedIn(Scraper):
     capabilities = AdapterCapabilities(
         filters=frozenset(
             {
-                "location",
-                "distance",
-                "is_remote",
-                "job_type",
-                "easy_apply",
-                "offset",
-                "hours_old",
-                "description_format",
+                SearchFilter.LOCATION,
+                SearchFilter.DISTANCE,
+                SearchFilter.IS_REMOTE,
+                SearchFilter.JOB_TYPE,
+                SearchFilter.EASY_APPLY,
+                SearchFilter.OFFSET,
+                SearchFilter.HOURS_OLD,
+                SearchFilter.DESCRIPTION_FORMAT,
             }
         ),
         supported_job_types=frozenset(
@@ -74,9 +77,7 @@ class LinkedIn(Scraper):
                 JobType.TEMPORARY,
             }
         ),
-        supports_resume=True,
-        resume_granularity="page",
-        cursor_schema_version=1,
+        resume=Resumable(granularity=ResumeGranularity.PAGE),
     )
 
     def __init__(
