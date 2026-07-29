@@ -23,9 +23,12 @@ from jobstreaming.model import (
     JobPost,
     JobResponse,
     Location,
+    Resumable,
+    ResumeGranularity,
     SalarySource,
     Scraper,
     ScraperInput,
+    SearchFilter,
     Site,
 )
 from jobstreaming.runtime import ScrapeContext
@@ -49,19 +52,17 @@ class ZipRecruiter(Scraper):
     capabilities = AdapterCapabilities(
         filters=frozenset(
             {
-                "location",
-                "distance",
-                "is_remote",
-                "job_type",
-                "easy_apply",
-                "offset",
-                "hours_old",
-                "description_format",
+                SearchFilter.LOCATION,
+                SearchFilter.DISTANCE,
+                SearchFilter.IS_REMOTE,
+                SearchFilter.JOB_TYPE,
+                SearchFilter.EASY_APPLY,
+                SearchFilter.OFFSET,
+                SearchFilter.HOURS_OLD,
+                SearchFilter.DESCRIPTION_FORMAT,
             }
         ),
-        supports_resume=True,
-        resume_granularity="continuation token",
-        cursor_schema_version=1,
+        resume=Resumable(granularity=ResumeGranularity.CONTINUATION_TOKEN),
     )
 
     def __init__(

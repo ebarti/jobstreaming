@@ -1,0 +1,105 @@
+name: Adapter drift
+description: Report a public, non-sensitive job-board compatibility regression.
+title: "[adapter]: "
+labels: []
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when a board changes an endpoint, response, cursor, filter, or
+        page structure. Remove credentials, cookies, authorization headers, personal
+        data, and full board responses before submitting. Report security issues
+        privately through the repository security policy.
+
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Adapter
+      options:
+        - Bayt
+        - BDJobs
+        - Glassdoor
+        - Google Jobs
+        - Indeed
+        - LinkedIn
+        - Naukri
+        - ZipRecruiter
+    validations:
+      required: true
+
+  - type: input
+    id: jobstreaming_version
+    attributes:
+      label: JobStreaming version
+      description: Use the installed package version, for example from `python -m pip show jobstreaming`.
+      placeholder: "0.0.3"
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      placeholder: "3.14"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: last_known_status
+    attributes:
+      label: Last known status
+      options:
+        - Worked with this JobStreaming version
+        - Worked with an earlier JobStreaming version
+        - Has not worked in my environment
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: request
+    attributes:
+      label: Sanitized request
+      description: Describe the query and non-sensitive options needed to reproduce the drift.
+      placeholder: |
+        search_term="platform engineer"
+        location="Madrid"
+        results_wanted=10
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include the typed warning or error code and a short, redacted excerpt if useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Prefer a small code sample. Do not include live tokens, cookies, headers, or response dumps.
+      render: python
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: public_safety
+    attributes:
+      label: Public-safety confirmation
+      options:
+        - label: I removed credentials, cookies, authorization headers, personal data, and sensitive board-response content.
+          required: true
+        - label: This is a compatibility report, not a suspected security vulnerability.
+          required: true

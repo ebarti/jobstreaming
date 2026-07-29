@@ -10,7 +10,7 @@ from jobstreaming.events import (
     SearchEvent,
     SiteCompleteEvent,
 )
-from jobstreaming.model import SearchRequest, Site
+from jobstreaming.model import AdapterIdentifier, SearchRequest
 from jobstreaming.outcome import (
     SearchFailedError,
     SearchFailure,
@@ -30,9 +30,9 @@ class _SiteAccumulator:
 class _OutcomeAccumulator:
     def __init__(
         self,
-        sites: tuple[Site, ...],
+        sites: tuple[AdapterIdentifier, ...],
         *,
-        initially_completed: frozenset[Site],
+        initially_completed: frozenset[AdapterIdentifier],
     ) -> None:
         self._sites = sites
         self._states = {

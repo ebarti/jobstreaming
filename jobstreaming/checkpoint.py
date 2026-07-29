@@ -17,7 +17,7 @@ from jobstreaming.events import (
     AdapterCheckpoint,
     SearchCheckpoint,
 )
-from jobstreaming.model import Site
+from jobstreaming.model import AdapterIdentifier
 
 
 class CheckpointError(RuntimeError):
@@ -56,7 +56,7 @@ class CheckpointWrite:
     """One acknowledged checkpoint transition and its append-only key delta."""
 
     checkpoint: SearchCheckpoint
-    adapter_site: Site | None = None
+    adapter_site: AdapterIdentifier | None = None
     new_seen_job_key: str | None = None
 
     def __post_init__(self) -> None:

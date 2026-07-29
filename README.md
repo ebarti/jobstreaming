@@ -10,7 +10,7 @@ background workers, workflow engines, and job-market analysis.
 It is a standalone Python package: no companion service or database is required. Some
 board adapters require operator-provided board credentials; the package does not ship
 shared credentials. Use the full event stream for durable ingestion, a job-only
-iterator for simple consumers, or the familiar DataFrame API for batch analysis.
+iterator for simple consumers, or the optional DataFrame API for batch analysis.
 
 JobStreaming is an independently maintained, heavily modified fork of an MIT-licensed
 upstream project. It retains the original license and attribution while using a
@@ -35,7 +35,7 @@ separate project, distribution, and import identity.
 - Requests and result models are immutable and validated.
 - A typed `collect_jobs(...) -> SearchOutcome` entry point preserves source identity,
   per-site terminal summaries, and chronological failures without building a DataFrame.
-- A `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and analysis
+- An optional `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and analysis
   workflows.
 - Adapters are registered through an extensible registry rather than a hard-coded
   dispatcher.
@@ -47,7 +47,7 @@ Choose the interface that matches your consumer:
 | Durable ingestion with progress, errors, and explicit acknowledgement | `stream_search` |
 | A simple iterator of normalized jobs | `stream_jobs` |
 | A typed aggregate with source identity and per-site outcomes | `collect_jobs` |
-| A Pandas DataFrame for notebooks, exports, or batch analysis | `scrape_jobs` |
+| A Pandas DataFrame for notebooks, exports, or batch analysis | `scrape_jobs` with the `batch` extra |
 | Application-owned checkpoint persistence | `CheckpointStore` |
 | Replacing or extending source behavior | `AdapterRegistry` |
 
@@ -74,6 +74,13 @@ Install the published package from PyPI:
 
 ```bash
 pip install -U jobstreaming
+```
+
+The default installation contains the streaming runtime and does not install or import
+Pandas. Install the optional batch surface when you need DataFrames:
+
+```bash
+pip install -U "jobstreaming[batch]"
 ```
 
 Both the PyPI distribution and Python import package are `jobstreaming`. No legacy
@@ -283,11 +290,12 @@ emitted jobs. Cancellation is not a failed outcome: `collect_jobs` propagates
 `StreamCancelledError`, while its managed stream still performs the same transport
 shutdown and bounded cleanup described below.
 
-`collect_jobs` does not construct a DataFrame. Pandas remains an install-time
-dependency on this branch; the core-only installation without Pandas becomes
-available when the separate optional-batch stack is incorporated.
+`collect_jobs` does not construct a DataFrame and remains available in the default
+installation without Pandas.
 
 Use `scrape_jobs` when the desired result is a Pandas DataFrame:
+
+Install `jobstreaming[batch]` before using this compatibility API:
 
 ```python
 from jobstreaming import scrape_jobs
@@ -308,12 +316,52 @@ jobs.to_csv("jobs.csv", index=False)
 `scrape_jobs` delegates collection to the typed outcome path, logs site failures, and
 converts retained jobs to a DataFrame. By default, healthy partial results are
 returned. Its `raise_on_error=True` mode raises the same `SearchFailedError` after all
-sites have had a chance to finish.
+sites have had a chance to finish. Calling it from a core-only installation raises
+`MissingOptionalDependencyError` before any adapter or network work begins, with the
+exact extra needed to enable it.
 
 Checkpoints store identities and cursor state, not full job payloads. A resumed batch
 call therefore contains only jobs emitted during that invocation. For a durable full
 result set across restarts, use `stream_search` and upsert each `JobEvent` into your own
 store before acknowledging it.
+
+## Salary provenance and description inference
+
+Structured compensation returned by a board is authoritative and is never replaced by
+description text. Normalized jobs attach `salary_provenance` with the source,
+confidence, and—only for description-derived values—the matched evidence snippet:
+
+- `direct_data` is high confidence.
+- Board-provided `estimated` compensation is medium confidence.
+- Description-derived compensation is medium confidence and must be enabled
+  explicitly.
+
+Description inference is off by default. This replaces the earlier implicit US-only
+heuristic, which guessed an interval from numeric thresholds. Opt in per request:
+
+```python
+from jobstreaming import DescriptionSalaryPolicy, stream_jobs
+
+jobs = stream_jobs(
+    site_name="google",
+    search_term="platform engineer",
+    country_indeed="Spain",
+    description_salary_policy=DescriptionSalaryPolicy.CONSERVATIVE,
+)
+```
+
+The conservative parser requires a nearby compensation cue, a range, an explicit pay
+interval, and an explicit or country-resolved currency. It handles common English,
+Spanish, Catalan, French, German, Portuguese, and Italian compensation and interval
+terms plus localized thousands/decimal separators. Ambiguous dollar symbols are
+resolved only for USD, CAD, AUD, or NZD request countries; bonuses, commissions,
+equity, budgets, costs, revenue, contract values, missing intervals, and reversed
+ranges are rejected. `enforce_annual_salary=True` annualizes accepted compensation
+without changing its provenance.
+
+The batch schema exposes flattened `salary_source`, `salary_confidence`, and
+`salary_evidence` columns alongside `interval`, `min_amount`, `max_amount`, and
+`currency`.
 
 ## Events
 
@@ -437,25 +485,43 @@ job titles/URLs, and unsupported enum values are rejected at the boundary.
 
 ## Custom adapters
 
+The adapter SDK uses five domain terms:
+
+- **Adapter identifier**: a stable `AdapterId` for a custom source; built-in sources
+  continue to use `Site`.
+- **Search filter**: a `SearchFilter` the source genuinely applies.
+- **Resume support**: either `NoResume` or `Resumable` with an open, validated
+  `ResumeGranularity` value and cursor schema version.
+- **Adapter**: the structural `Adapter` protocol; inheritance is optional.
+- **Adapter test kit**: offline helpers that validate construction, identity, and
+  fixture-driven resume behavior without requiring pytest at runtime.
+
 ```python
 from jobstreaming import (
     AdapterCapabilities,
+    AdapterId,
     AdapterRegistry,
+    AdapterTestKit,
     JobResponse,
+    Resumable,
+    ResumeGranularity,
     Scraper,
-    Site,
+    SearchFilter,
     stream_search,
 )
 
 class InternalJobs(Scraper):
+    identifier = AdapterId("company.internal_jobs")
     capabilities = AdapterCapabilities(
-        supports_resume=True,
-        resume_granularity="cursor",
-        cursor_schema_version=1,
+        filters=frozenset({SearchFilter.SEARCH_TERM}),
+        resume=Resumable(
+            granularity=ResumeGranularity.CURSOR,
+            cursor_schema_version=1,
+        ),
     )
 
-    def __init__(self, **kwargs):
-        super().__init__(Site.INDEED)  # this example replaces the Indeed adapter
+    def __init__(self, proxies=None, ca_cert=None, user_agent=None, **kwargs):
+        super().__init__(self.identifier)
         self.session = self.track_transport(make_internal_session())
 
     def scrape(self, request, context=None):
@@ -464,10 +530,11 @@ class InternalJobs(Scraper):
         return JobResponse()
 
 registry = AdapterRegistry()
-registry.register(Site.INDEED, InternalJobs)
+registry.register(InternalJobs.identifier, InternalJobs)
+AdapterTestKit.assert_conforms(InternalJobs.identifier, InternalJobs)
 
 with stream_search(
-    site_name="indeed",
+    site_name=InternalJobs.identifier,
     registry=registry,
     search_term="engineer",
 ) as stream:
@@ -476,9 +543,11 @@ with stream_search(
 ```
 
 Increment `cursor_schema_version` whenever a deployed adapter can no longer interpret
-cursor state written by its previous implementation. Legacy adapters that only return
-`JobResponse` are still accepted, but their results cannot be streamed until that
-adapter returns.
+cursor state written by its previous implementation. Custom identifiers are validated,
+serialized as strings in requests/events/checkpoints, and must not collide with a
+built-in `Site`. Resume granularities are also open to third-party values; spaces and
+hyphens normalize to underscores, so the legacy `"continuation token"` value becomes
+`ResumeGranularity("continuation_token")`.
 
 Register every closeable client/session with `track_transport()`, including sessions
 created lazily or inside detail-worker threads. The base `Scraper.close()` closes each
@@ -491,18 +560,39 @@ closed and rejected with `RuntimeError`; it is never returned to adapter code as
 usable client. Transport close failures remain visible in
 `stream.diagnostics.cleanup_errors`, including failures from late registration races.
 
-The registry can replace any built-in adapter. Adding an entirely new site also
-requires adding that board to the `Site` enum so it participates in validation,
-fingerprinting, events, and checkpoints.
+`Site` arguments and built-in site strings remain compatible. The legacy
+`supports_resume` / `resume_granularity` constructor fields still parse with a
+`DeprecationWarning`; migrate to `resume=Resumable(...)` or `resume=NoResume()`.
+Adapters must expose `AdapterCapabilities`, and factories that declare capabilities
+must produce the same value. An ordinary function factory may omit a class-level
+declaration; registration then uses a provisional cursor schema version of 1 (or an
+explicit deprecated registration value) and validates the first produced instance
+before scraping. A discovered resume-schema mismatch fails instead of writing an
+incompatible checkpoint.
+
+Adapters should implement `scrape(request, context=None)`. Runtime execution no longer
+inspects method signatures. Registration temporarily detects the old
+`scrape(request)` form and warns; use `legacy_adapter(factory)` as an explicit
+non-resumable bridge while migrating. That bridge preserves declared filters and
+job-type support while disabling resume, and forwards lifecycle cleanup to a wrapped
+adapter's `close()` hook. Implicit legacy detection is scheduled for removal in 1.0.
+
+The distribution includes `py.typed`, so consumers can type-check protocol
+implementations and capability declarations.
 
 ## Development
 
 ```bash
-poetry install
-poetry run pytest
-poetry run ruff check jobstreaming tests
-poetry run black --check jobstreaming tests
+poetry install --all-extras
+poetry run pytest --cov
+poetry run python scripts/check_coverage.py
+poetry run ruff check jobstreaming tests scripts
+poetry run mypy
+poetry run black --check jobstreaming tests scripts
 poetry build
+python scripts/verify_release_artifacts.py \
+  --expected-version "$(poetry version --short)" \
+  --dist-dir dist
 ```
 
 The deterministic checkpoint benchmark uses fixed 10,000 and 100,000
@@ -517,6 +607,14 @@ The test suite is offline: it validates domain invariants, concurrency, failure
 isolation, acknowledgement/replay behavior, checkpoint persistence, compatibility, and
 representative adapter parsing without calling live job boards.
 
+The separate `Adapter live canary` workflow is opt-in and never runs as part of pull
+request CI. Set the repository variable `JOBSTREAMING_CANARY_ENABLED=true`, configure
+`JOBSTREAMING_CANARY_SITES` as a comma-separated list of boards you are authorized to
+query, and add only the corresponding `JOBSTREAMING_*` repository secrets. Optional
+`JOBSTREAMING_CANARY_QUERY` and `JOBSTREAMING_CANARY_LOCATION` variables keep the
+minimal one-result queries stable. An unconfigured workflow exits successfully without
+contacting any board, and its output contains only board names and aggregate status.
+
 ## Support and security
 
 Use [GitHub issues](https://github.com/ebarti/jobstreaming/issues) for reproducible
@@ -529,7 +627,9 @@ Do not place credentials or vulnerability details in an issue. See
 reporting and supported-version policy, and
 [CONTRIBUTING.md](https://github.com/ebarti/jobstreaming/blob/main/CONTRIBUTING.md)
 before submitting a change. Release history is in
-[CHANGELOG.md](https://github.com/ebarti/jobstreaming/blob/main/CHANGELOG.md).
+[CHANGELOG.md](https://github.com/ebarti/jobstreaming/blob/main/CHANGELOG.md), and the
+maintainer release contract is in
+[RELEASING.md](https://github.com/ebarti/jobstreaming/blob/main/RELEASING.md).
 
 ## License and attribution
 
