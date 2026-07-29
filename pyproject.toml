@@ -73,8 +73,16 @@ select = ["E4", "E7", "E9", "F", "I", "B", "UP", "SIM"]
 addopts = "-ra"
 testpaths = ["tests"]
 
+[tool.coverage.run]
+source = ["jobstreaming"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
 [tool.poetry.group.dev.dependencies]
 black = ">=24.0"
 pre-commit = ">=3.0"
 pytest = ">=8.0"
+pytest-cov = ">=6.0"
 ruff = ">=0.9"

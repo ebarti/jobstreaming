@@ -372,9 +372,10 @@ fingerprinting, events, and checkpoints.
 
 ```bash
 poetry install
-poetry run pytest
-poetry run ruff check jobstreaming scripts tests
-poetry run black --check jobstreaming scripts tests
+poetry run pytest --cov
+poetry run python scripts/check_coverage.py
+poetry run ruff check jobstreaming tests scripts
+poetry run black --check jobstreaming tests scripts
 poetry build
 python scripts/verify_release_artifacts.py \
   --expected-version "$(poetry version --short)" \
@@ -384,6 +385,14 @@ python scripts/verify_release_artifacts.py \
 The test suite is offline: it validates domain invariants, concurrency, failure
 isolation, acknowledgement/replay behavior, checkpoint persistence, compatibility, and
 representative adapter parsing without calling live job boards.
+
+The separate `Adapter live canary` workflow is opt-in and never runs as part of pull
+request CI. Set the repository variable `JOBSTREAMING_CANARY_ENABLED=true`, configure
+`JOBSTREAMING_CANARY_SITES` as a comma-separated list of boards you are authorized to
+query, and add only the corresponding `JOBSTREAMING_*` repository secrets. Optional
+`JOBSTREAMING_CANARY_QUERY` and `JOBSTREAMING_CANARY_LOCATION` variables keep the
+minimal one-result queries stable. An unconfigured workflow exits successfully without
+contacting any board, and its output contains only board names and aggregate status.
 
 ## Support and security
 

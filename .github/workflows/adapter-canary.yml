@@ -1,0 +1,46 @@
+name: Adapter live canary
+
+on:
+  schedule:
+    - cron: "17 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adapter-live-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JOBSTREAMING_CANARY_ENABLED: ${{ vars.JOBSTREAMING_CANARY_ENABLED }}
+      JOBSTREAMING_CANARY_SITES: ${{ vars.JOBSTREAMING_CANARY_SITES }}
+      JOBSTREAMING_CANARY_QUERY: ${{ vars.JOBSTREAMING_CANARY_QUERY }}
+      JOBSTREAMING_CANARY_LOCATION: ${{ vars.JOBSTREAMING_CANARY_LOCATION }}
+      JOBSTREAMING_GLASSDOOR_CSRF_TOKEN: ${{ secrets.JOBSTREAMING_GLASSDOOR_CSRF_TOKEN }}
+      JOBSTREAMING_INDEED_API_KEY: ${{ secrets.JOBSTREAMING_INDEED_API_KEY }}
+      JOBSTREAMING_NAUKRI_NKPARAM: ${{ secrets.JOBSTREAMING_NAUKRI_NKPARAM }}
+      JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION: ${{ secrets.JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install Poetry
+        run: python -m pip install poetry==2.4.1
+
+      - name: Install project
+        run: poetry install --only main --no-interaction
+
+      - name: Run minimal authorized adapter queries
+        run: poetry run python scripts/run_live_canary.py

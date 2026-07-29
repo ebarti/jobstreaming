@@ -43,13 +43,16 @@ jobs:
         run: poetry check --lock
 
       - name: Run tests
-        run: poetry run pytest
+        run: poetry run pytest --cov --cov-report=term-missing
+
+      - name: Enforce adapter coverage ratchets
+        run: poetry run python scripts/check_coverage.py
 
       - name: Run Ruff
-        run: poetry run ruff check jobstreaming scripts tests
+        run: poetry run ruff check jobstreaming tests scripts
 
       - name: Check formatting
-        run: poetry run black --check jobstreaming scripts tests
+        run: poetry run black --check jobstreaming tests scripts
 
   build:
     needs: test
