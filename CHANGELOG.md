@@ -16,7 +16,7 @@ still change when upstream boards drift.
 - Transactional `SqliteCheckpointStore` persistence with compare-and-swap revisions
   and incremental seen-key acknowledgements.
 - An `AtomicCheckpointStore` capability for all-or-nothing checkpoint replacement.
-- Pandas-independent `collect_jobs()` outcomes with sourced jobs, invocation-local
+- DataFrame-independent `collect_jobs()` outcomes with sourced jobs, invocation-local
   per-site counters, chronological failures, explicit partial/failed status, and
   aggregate `SearchFailedError` strict mode; cancellation remains distinct.
 
@@ -39,8 +39,8 @@ still change when upstream boards drift.
 ### Fixed
 
 - SQLite replacement now rolls back to the previous checkpoint when reseeding fails,
-  rejects future schemas before creating current tables, and closes connections when
-  setup fails.
+  advances the revision to fence stale owners, rejects future schemas before creating
+  current tables, and closes connections when setup fails.
 - ZipRecruiter rounds partial-day age filters up and preserves an explicit zero-mile
   radius.
 - Unsupported Indeed and LinkedIn job-type values are omitted rather than raised or

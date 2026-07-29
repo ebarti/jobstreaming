@@ -107,7 +107,7 @@ def collect_jobs(
     raise_on_error: bool = False,
     **stream_options: Any,
 ) -> SearchOutcome:
-    """Consume a search into a typed, pandas-independent outcome aggregate."""
+    """Consume a search into a typed outcome without constructing a DataFrame."""
 
     from jobstreaming.api import stream_search
 

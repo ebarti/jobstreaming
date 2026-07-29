@@ -44,7 +44,7 @@ class CheckpointStore(Protocol):
 class AtomicCheckpointStore(CheckpointStore, Protocol):
     """A store that can replace one search checkpoint as a single transition."""
 
-    def replace(self, checkpoint: SearchCheckpoint) -> None: ...
+    def replace(self, checkpoint: SearchCheckpoint) -> SearchCheckpoint: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,8 +105,9 @@ class MemoryCheckpointStore:
         with self._lock:
             self._checkpoint = None
 
-    def replace(self, checkpoint: SearchCheckpoint) -> None:
+    def replace(self, checkpoint: SearchCheckpoint) -> SearchCheckpoint:
         self.save(checkpoint)
+        return checkpoint.model_copy(deep=True)
 
 
 class JsonFileCheckpointStore:
@@ -156,8 +157,9 @@ class JsonFileCheckpointStore:
         with self._lock:
             self.path.unlink(missing_ok=True)
 
-    def replace(self, checkpoint: SearchCheckpoint) -> None:
+    def replace(self, checkpoint: SearchCheckpoint) -> SearchCheckpoint:
         self.save(checkpoint)
+        return checkpoint.model_copy(deep=True)
 
 
 class SqliteCheckpointStore:
@@ -319,6 +321,25 @@ class SqliteCheckpointStore:
             checkpoint.updated_at.isoformat(),
         )
 
+    def _insert_header(
+        self,
+        connection: sqlite3.Connection,
+        checkpoint: SearchCheckpoint,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO jobstreaming_search_checkpoint (
+                singleton,
+                version,
+                revision,
+                request_fingerprint,
+                completed,
+                updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?)
+            """,
+            self._header_values(checkpoint),
+        )
+
     def _advance_header(
         self,
         connection: sqlite3.Connection,
@@ -334,19 +355,7 @@ class SqliteCheckpointStore:
                 raise CheckpointConflictError(
                     "initial SQLite checkpoint revision must be zero"
                 )
-            connection.execute(
-                """
-                INSERT INTO jobstreaming_search_checkpoint (
-                    singleton,
-                    version,
-                    revision,
-                    request_fingerprint,
-                    completed,
-                    updated_at
-                ) VALUES (1, ?, ?, ?, ?, ?)
-                """,
-                self._header_values(checkpoint),
-            )
+            self._insert_header(connection, checkpoint)
             return True
 
         expected_revision = int(current["revision"]) + 1
@@ -624,12 +633,28 @@ class SqliteCheckpointStore:
                 f"Unable to clear SQLite checkpoint {self.path}: {exc}"
             ) from exc
 
-    def replace(self, checkpoint: SearchCheckpoint) -> None:
+    def replace(self, checkpoint: SearchCheckpoint) -> SearchCheckpoint:
         try:
             with self._transaction() as connection:
+                current = connection.execute("""
+                    SELECT revision
+                    FROM jobstreaming_search_checkpoint
+                    WHERE singleton = 1
+                    """).fetchone()
+                if current is None:
+                    if checkpoint.revision != 0:
+                        raise CheckpointConflictError(
+                            "initial SQLite checkpoint revision must be zero"
+                        )
+                    persisted = checkpoint
+                else:
+                    persisted = checkpoint.model_copy(
+                        update={"revision": int(current["revision"]) + 1}
+                    )
                 self._clear_checkpoint(connection)
-                self._advance_header(connection, checkpoint)
-                self._save_full(connection, checkpoint)
+                self._insert_header(connection, persisted)
+                self._save_full(connection, persisted)
+                return persisted
         except (CheckpointConflictError, CheckpointError):
             raise
         except sqlite3.Error as exc:

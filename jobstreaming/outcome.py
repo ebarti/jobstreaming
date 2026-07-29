@@ -46,6 +46,7 @@ class SearchFailure:
     type: EventType = field(default=EventType.ERROR, init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "resume_state", freeze_state(self.resume_state))
         if self.sequence < 1:
             raise ValueError("failure sequence must be positive")
         if not self.message:
@@ -66,7 +67,7 @@ class SearchFailure:
             message=event.message,
             error_type=event.error_type,
             recoverable=event.recoverable,
-            resume_state=freeze_state(event.resume_state),
+            resume_state=event.resume_state,
             code=event.code,
             retryable=event.retryable,
             retry_after=event.retry_after,

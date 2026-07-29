@@ -176,6 +176,28 @@ def test_jobs_followed_by_a_failure_are_a_partial_outcome() -> None:
     assert outcome.failed_sites == (Site.INDEED,)
 
 
+def test_direct_search_failure_detaches_and_deeply_freezes_resume_state() -> None:
+    caller_state = {"cursor": {"page": 3}}
+    failure = SearchFailure(
+        sequence=1,
+        emitted_at=datetime.now(timezone.utc),
+        site=Site.INDEED,
+        message="adapter failed",
+        error_type="RuntimeError",
+        recoverable=False,
+        resume_state=caller_state,
+        code=ErrorCode.ADAPTER_FAILURE,
+        retryable=False,
+        reset_checkpoint=False,
+    )
+
+    caller_state["cursor"]["page"] = 99
+
+    assert failure.resume_state["cursor"]["page"] == 3
+    with pytest.raises(TypeError):
+        failure.resume_state["cursor"]["page"] = 4
+
+
 def test_outcome_matches_equal_nonidentical_open_identifiers() -> None:
     @dataclass(frozen=True)
     class OpenIdentifier:
