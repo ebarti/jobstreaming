@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -44,10 +46,10 @@ jobs:
         run: poetry run pytest
 
       - name: Run Ruff
-        run: poetry run ruff check jobstreaming tests
+        run: poetry run ruff check jobstreaming scripts tests
 
       - name: Check formatting
-        run: poetry run black --check jobstreaming tests
+        run: poetry run black --check jobstreaming scripts tests
 
   build:
     needs: test
@@ -56,6 +58,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -68,3 +72,9 @@ jobs:
 
       - name: Build distributions
         run: poetry build
+
+      - name: Verify installed wheel and source distribution
+        run: >-
+          python scripts/verify_release_artifacts.py
+          --expected-version "$(poetry version --short)"
+          --dist-dir dist
