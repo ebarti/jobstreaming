@@ -12,7 +12,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol, runtime_checkable
 
-from jobstreaming.events import AdapterCheckpoint, SearchCheckpoint
+from jobstreaming.events import (
+    LEGACY_CHECKPOINT_GENERATION,
+    AdapterCheckpoint,
+    SearchCheckpoint,
+)
 from jobstreaming.model import Site
 
 
@@ -29,7 +33,7 @@ class CheckpointCompatibilityError(CheckpointError):
 
 
 class CheckpointConflictError(CheckpointError):
-    """A store rejected a save because the caller owns a stale revision."""
+    """A store rejected a save because the caller has stale checkpoint ownership."""
 
 
 class CheckpointStore(Protocol):
@@ -165,9 +169,10 @@ class JsonFileCheckpointStore:
 class SqliteCheckpointStore:
     """Transactional SQLite checkpoint storage for one search stream.
 
-    Checkpoint metadata and adapter state use compare-and-swap revision semantics.
-    Seen job keys live in an ordered append-only table, so an acknowledgement writes
-    only its new key rather than replacing all historical keys.
+    Checkpoint metadata and adapter state use generation-and-revision
+    compare-and-swap semantics. Seen job keys live in an ordered append-only table, so
+    an acknowledgement writes only its new key rather than replacing all historical
+    keys.
     """
 
     _SCHEMA_VERSION = 1
@@ -201,7 +206,7 @@ class SqliteCheckpointStore:
             connection.close()
             raise
 
-    def _validate_existing_schema(self, connection: sqlite3.Connection) -> None:
+    def _validate_existing_schema(self, connection: sqlite3.Connection) -> bool:
         schema_table = connection.execute("""
             SELECT 1
             FROM sqlite_master
@@ -209,7 +214,7 @@ class SqliteCheckpointStore:
               AND name = 'jobstreaming_checkpoint_schema'
             """).fetchone()
         if schema_table is None:
-            return
+            return False
 
         version = connection.execute("""
             SELECT version
@@ -222,11 +227,44 @@ class SqliteCheckpointStore:
                 f"SQLite checkpoint schema {stored_version} is incompatible with "
                 f"schema {self._SCHEMA_VERSION}"
             )
+        return True
+
+    @staticmethod
+    def _migrate_v1_generation(connection: sqlite3.Connection) -> None:
+        search_table = connection.execute("""
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'jobstreaming_search_checkpoint'
+            """).fetchone()
+        if search_table is None:
+            return
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(jobstreaming_search_checkpoint)"
+            )
+        }
+        if "generation" in columns:
+            return
+        connection.execute(f"""
+            ALTER TABLE jobstreaming_search_checkpoint
+            ADD COLUMN generation TEXT NOT NULL
+                DEFAULT '{LEGACY_CHECKPOINT_GENERATION}'
+            """)
 
     def _initialize(self) -> None:
         try:
             with closing(self._connect()) as connection:
-                self._validate_existing_schema(connection)
+                has_supported_schema = self._validate_existing_schema(connection)
+                if has_supported_schema:
+                    connection.execute("BEGIN IMMEDIATE")
+                    try:
+                        self._migrate_v1_generation(connection)
+                        connection.commit()
+                    except Exception:
+                        connection.rollback()
+                        raise
                 connection.execute("PRAGMA journal_mode = WAL")
                 connection.execute("PRAGMA synchronous = FULL")
                 connection.executescript("""
@@ -243,6 +281,7 @@ class SqliteCheckpointStore:
                         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                         version INTEGER NOT NULL CHECK (version >= 1),
                         revision INTEGER NOT NULL CHECK (revision >= 0),
+                        generation TEXT NOT NULL CHECK (length(generation) > 0),
                         request_fingerprint TEXT NOT NULL,
                         completed INTEGER NOT NULL CHECK (completed IN (0, 1)),
                         updated_at TEXT NOT NULL
@@ -316,6 +355,7 @@ class SqliteCheckpointStore:
         return (
             checkpoint.version,
             checkpoint.revision,
+            checkpoint.generation,
             checkpoint.request_fingerprint,
             int(checkpoint.completed),
             checkpoint.updated_at.isoformat(),
@@ -332,10 +372,11 @@ class SqliteCheckpointStore:
                 singleton,
                 version,
                 revision,
+                generation,
                 request_fingerprint,
                 completed,
                 updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?)
+            ) VALUES (1, ?, ?, ?, ?, ?, ?)
             """,
             self._header_values(checkpoint),
         )
@@ -346,7 +387,7 @@ class SqliteCheckpointStore:
         checkpoint: SearchCheckpoint,
     ) -> bool:
         current = connection.execute("""
-            SELECT version, revision, request_fingerprint
+            SELECT version, revision, generation, request_fingerprint
             FROM jobstreaming_search_checkpoint
             WHERE singleton = 1
             """).fetchone()
@@ -367,6 +408,7 @@ class SqliteCheckpointStore:
             )
         if (
             current["version"] != checkpoint.version
+            or current["generation"] != checkpoint.generation
             or current["request_fingerprint"] != checkpoint.request_fingerprint
         ):
             raise CheckpointConflictError(
@@ -377,12 +419,16 @@ class SqliteCheckpointStore:
             UPDATE jobstreaming_search_checkpoint
             SET version = ?,
                 revision = ?,
+                generation = ?,
                 request_fingerprint = ?,
                 completed = ?,
                 updated_at = ?
-            WHERE singleton = 1 AND revision = ?
+            WHERE singleton = 1
+              AND revision = ?
+              AND generation = ?
             """,
-            self._header_values(checkpoint) + (current["revision"],),
+            self._header_values(checkpoint)
+            + (current["revision"], current["generation"]),
         )
         if updated.rowcount != 1:
             raise CheckpointConflictError(
@@ -488,7 +534,13 @@ class SqliteCheckpointStore:
         try:
             with self._read_transaction() as connection:
                 header = connection.execute("""
-                    SELECT version, revision, request_fingerprint, completed, updated_at
+                    SELECT
+                        version,
+                        revision,
+                        generation,
+                        request_fingerprint,
+                        completed,
+                        updated_at
                     FROM jobstreaming_search_checkpoint
                     WHERE singleton = 1
                     """).fetchone()
@@ -536,6 +588,7 @@ class SqliteCheckpointStore:
                     {
                         "version": header["version"],
                         "revision": header["revision"],
+                        "generation": header["generation"],
                         "request_fingerprint": header["request_fingerprint"],
                         "adapters": adapters,
                         "completed": bool(header["completed"]),
