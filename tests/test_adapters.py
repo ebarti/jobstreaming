@@ -12,11 +12,13 @@ from jobstreaming import (
     JobPost,
     JobType,
     MemoryCheckpointStore,
+    ScrapeContext,
     SearchRequest,
     Site,
     stream_search,
 )
 from jobstreaming.bayt import BaytScraper
+from jobstreaming.bdjobs import BDJobs
 from jobstreaming.bdjobs.util import parse_location as parse_bdjobs_location
 from jobstreaming.glassdoor import Glassdoor
 from jobstreaming.glassdoor.util import (
@@ -259,6 +261,277 @@ def test_bdjobs_location_does_not_duplicate_country_as_state() -> None:
     assert location.city == "Dhaka"
     assert location.state is None
     assert location.country is Country.BANGLADESH
+
+
+def test_bdjobs_releases_detail_sessions_after_each_page(monkeypatch) -> None:
+    current_page = 0
+    detail_sessions = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+    class DetailSession:
+        def __init__(self) -> None:
+            self.closed = False
+            self.headers = {}
+            detail_sessions.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class BoundedBDJobs(BDJobs):
+        delay = 0
+        band_delay = 0
+
+        def __init__(self) -> None:
+            self.maximum_tracked_transports = 0
+            super().__init__()
+
+        def track_transport(self, transport):
+            tracked = super().track_transport(transport)
+            self.maximum_tracked_transports = max(
+                self.maximum_tracked_transports,
+                self.tracked_transport_count,
+            )
+            return tracked
+
+    scraper = BoundedBDJobs()
+
+    def search_page(*args, **kwargs):
+        nonlocal current_page
+        next_page = int(kwargs.get("params", {}).get("pg", 1))
+        if current_page:
+            assert all(session.closed for session in detail_sessions)
+            assert scraper.tracked_transport_count == 1
+        current_page = next_page
+        return Response()
+
+    def process_job(card: int) -> JobPost:
+        scraper._detail_session()
+        return JobPost(
+            id=f"{current_page}-{card}",
+            title=f"Job {current_page}-{card}",
+            job_url=f"https://example.test/bdjobs/{current_page}/{card}",
+        )
+
+    monkeypatch.setattr(scraper.session, "get", search_page)
+    monkeypatch.setattr(
+        "jobstreaming.bdjobs.find_job_listings",
+        lambda _: list(range(8)),
+    )
+    monkeypatch.setattr(
+        "jobstreaming.bdjobs.create_session",
+        lambda **_: DetailSession(),
+    )
+    monkeypatch.setattr(scraper, "_process_job", process_job)
+
+    response = scraper.scrape(
+        SearchRequest(
+            site_type=(Site.BDJOBS,),
+            results_wanted=10_000,
+            max_pages=40,
+            request_timeout=0.1,
+        )
+    )
+
+    assert len(response.jobs) == 320
+    assert 1 < scraper.maximum_tracked_transports <= 9
+    assert scraper.tracked_transport_count == 1
+    assert len(detail_sessions) >= 40
+    assert all(session.closed for session in detail_sessions)
+    scraper.close()
+
+
+def test_ziprecruiter_releases_detail_sessions_after_each_page(monkeypatch) -> None:
+    current_page = 0
+    detail_sessions = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "jobs": [{"page": current_page, "index": index} for index in range(8)],
+                "continue": "next",
+            }
+
+    class DetailSession:
+        def __init__(self) -> None:
+            self.closed = False
+            self.headers = {}
+            detail_sessions.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class BoundedZipRecruiter(ZipRecruiter):
+        def __init__(self) -> None:
+            self.maximum_tracked_transports = 0
+            super().__init__()
+
+        def track_transport(self, transport):
+            tracked = super().track_transport(transport)
+            self.maximum_tracked_transports = max(
+                self.maximum_tracked_transports,
+                self.tracked_transport_count,
+            )
+            return tracked
+
+    scraper = BoundedZipRecruiter()
+    request = SearchRequest(
+        site_type=(Site.ZIP_RECRUITER,),
+        results_wanted=10_000,
+        max_pages=40,
+        request_timeout=0.1,
+    )
+    scraper.scraper_input = request
+    context = ScrapeContext(site=Site.ZIP_RECRUITER, request=request)
+
+    monkeypatch.setattr(scraper.session, "get", lambda *_, **__: Response())
+    monkeypatch.setattr(
+        "jobstreaming.ziprecruiter.create_session",
+        lambda **_: DetailSession(),
+    )
+
+    def process_job(job: dict) -> JobPost:
+        scraper._get_detail_session()
+        return JobPost(
+            id=f"{job['page']}-{job['index']}",
+            title=f"Job {job['page']}-{job['index']}",
+            job_url=(
+                "https://example.test/ziprecruiter/" f"{job['page']}/{job['index']}"
+            ),
+        )
+
+    monkeypatch.setattr(scraper, "_process_job", process_job)
+
+    jobs = []
+    skipped = 0
+    for current_page in range(1, 41):
+        page_jobs, _, skipped = scraper._find_jobs_in_page(
+            request,
+            context,
+            None,
+            skipped,
+            {"page": current_page},
+        )
+        jobs.extend(page_jobs)
+        assert scraper.tracked_transport_count == 1
+        assert all(session.closed for session in detail_sessions)
+
+    assert len(jobs) == 320
+    assert len(detail_sessions) >= 40
+    assert 1 < scraper.maximum_tracked_transports <= 9
+    scraper.close()
+
+
+def test_glassdoor_releases_detail_sessions_after_each_page(monkeypatch) -> None:
+    current_page = 0
+    detail_sessions = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return [
+                {
+                    "data": {
+                        "jobListings": {
+                            "jobListings": [
+                                {"page": current_page, "index": index}
+                                for index in range(8)
+                            ],
+                            "paginationCursors": [],
+                        }
+                    }
+                }
+            ]
+
+    class PrimarySession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def post(self, *args, **kwargs):
+            return Response()
+
+        def close(self) -> None:
+            self.closed = True
+
+    class DetailSession:
+        def __init__(self) -> None:
+            self.closed = False
+            self.headers = {}
+            detail_sessions.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class BoundedGlassdoor(Glassdoor):
+        def __init__(self) -> None:
+            self.maximum_tracked_transports = 0
+            super().__init__()
+
+        def track_transport(self, transport):
+            tracked = super().track_transport(transport)
+            self.maximum_tracked_transports = max(
+                self.maximum_tracked_transports,
+                self.tracked_transport_count,
+            )
+            return tracked
+
+    scraper = BoundedGlassdoor()
+    scraper.base_url = "https://example.test/"
+    scraper.session = scraper.track_transport(PrimarySession())
+    request = SearchRequest(
+        site_type=(Site.GLASSDOOR,),
+        results_wanted=10_000,
+        max_pages=40,
+        request_timeout=0.1,
+    )
+    scraper.scraper_input = request
+    context = ScrapeContext(site=Site.GLASSDOOR, request=request)
+
+    monkeypatch.setattr(scraper, "_add_payload", lambda *args, **kwargs: "{}")
+    monkeypatch.setattr(
+        "jobstreaming.glassdoor.get_cursor_for_page",
+        lambda *args, **kwargs: "next",
+    )
+    monkeypatch.setattr(
+        "jobstreaming.glassdoor.create_session",
+        lambda **_: DetailSession(),
+    )
+
+    def process_job(job: dict) -> JobPost:
+        scraper._get_detail_session()
+        return JobPost(
+            id=f"{job['page']}-{job['index']}",
+            title=f"Job {job['page']}-{job['index']}",
+            job_url=(f"https://example.test/glassdoor/{job['page']}/{job['index']}"),
+        )
+
+    monkeypatch.setattr(scraper, "_process_job", process_job)
+
+    jobs = []
+    for current_page in range(1, 41):
+        page_jobs, _, raw_count = scraper._fetch_jobs_page(
+            request,
+            1,
+            "CITY",
+            current_page,
+            None,
+            context,
+            {"page": current_page},
+        )
+        jobs.extend(page_jobs)
+        assert raw_count == 8
+        assert scraper.tracked_transport_count == 1
+        assert all(session.closed for session in detail_sessions)
+
+    assert len(jobs) == 320
+    assert len(detail_sessions) >= 40
+    assert 1 < scraper.maximum_tracked_transports <= 9
+    scraper.close()
 
 
 def test_bayt_resume_after_an_acknowledged_page_continues_to_the_next_page() -> None:

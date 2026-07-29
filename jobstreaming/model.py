@@ -5,8 +5,11 @@ import json
 import re
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from enum import Enum
+from threading import Lock, RLock
 from typing import Any, ClassVar, Literal, TypeAlias, cast
 
 from pydantic import (
@@ -17,6 +20,8 @@ from pydantic import (
     model_validator,
 )
 from pydantic_core import core_schema
+
+from jobstreaming.exception import _TransportCleanupError
 
 
 class JobType(Enum):
@@ -727,6 +732,117 @@ class Scraper(ABC):
         self.proxies = proxies
         self.ca_cert = ca_cert
         self.user_agent = user_agent
+        self._transport_lock = Lock()
+        self._transport_scope_lock = RLock()
+        self._transports: list[Any] = []
+        self._transports_closed = False
+        self._transport_cleanup_errors: list[str] = []
+
+    @property
+    def tracked_transport_count(self) -> int:
+        with self._transport_lock:
+            return len(self._transports)
+
+    @property
+    def transport_cleanup_errors(self) -> tuple[str, ...]:
+        with self._transport_lock:
+            return tuple(self._transport_cleanup_errors)
+
+    def _record_transport_cleanup_error(self, exc: Exception) -> None:
+        message = f"{type(exc).__name__}: {exc}"
+        with self._transport_lock:
+            self._transport_cleanup_errors.append(message)
+
+    def _close_transports(self, transports: tuple[Any, ...]) -> None:
+        errors: list[Exception] = []
+        for transport in transports:
+            close = getattr(transport, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception as exc:
+                self._record_transport_cleanup_error(exc)
+                errors.append(exc)
+        if errors:
+            raise _TransportCleanupError(
+                f"{self.site.value} failed to close {len(errors)} transport(s)"
+            ) from errors[0]
+
+    def track_transport(self, transport: Any) -> Any:
+        """Register a closeable transport owned by this adapter.
+
+        Adapters that create sessions lazily or on detail-worker threads should
+        register each one. Registration after shutdown closes and rejects the
+        transport, so adapter code can never receive a closed client for use.
+        """
+
+        close_immediately = False
+        with self._transport_lock:
+            if self._transports_closed:
+                close_immediately = True
+            elif not any(existing is transport for existing in self._transports):
+                self._transports.append(transport)
+        if close_immediately:
+            close = getattr(transport, "close", None)
+            close_error: Exception | None = None
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:
+                    self._record_transport_cleanup_error(exc)
+                    close_error = exc
+            raise RuntimeError(
+                f"{self.site.value} adapter is closed; rejected late transport"
+            ) from close_error
+        return transport
+
+    @contextmanager
+    def transport_scope(self) -> Iterator[None]:
+        """Close transports created inside a bounded adapter operation."""
+
+        with self._transport_scope_lock:
+            with self._transport_lock:
+                baseline = frozenset(id(transport) for transport in self._transports)
+            body_failed = False
+            try:
+                yield
+            except BaseException:
+                body_failed = True
+                raise
+            finally:
+                with self._transport_lock:
+                    scoped = tuple(
+                        reversed(
+                            [
+                                transport
+                                for transport in self._transports
+                                if id(transport) not in baseline
+                            ]
+                        )
+                    )
+                    self._transports = [
+                        transport
+                        for transport in self._transports
+                        if id(transport) in baseline
+                    ]
+                try:
+                    self._close_transports(scoped)
+                except Exception:
+                    if not body_failed:
+                        raise
+
+    def close(self) -> None:
+        """Close every transport registered by the adapter exactly once."""
+
+        with self._transport_lock:
+            if self._transports_closed:
+                return
+            self._transports_closed = True
+            transports = tuple(reversed(self._transports))
+            self._transports.clear()
+
+        self._close_transports(transports)
 
     @abstractmethod
     def scrape(

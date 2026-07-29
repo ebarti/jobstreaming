@@ -80,8 +80,8 @@ class Indeed(Scraper):
             user_agent=user_agent,
         )
 
-        self.session = create_session(
-            proxies=self.proxies, ca_cert=ca_cert, is_tls=False
+        self.session = self.track_transport(
+            create_session(proxies=self.proxies, ca_cert=ca_cert, is_tls=False)
         )
         self.scraper_input = None
         self.jobs_per_page = 100

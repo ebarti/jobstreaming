@@ -79,6 +79,11 @@ class _LegacyAdapter:
         del context
         return cast(JobResponse, self._adapter.scrape(scraper_input))
 
+    def close(self) -> None:
+        close = getattr(self._adapter, "close", None)
+        if callable(close):
+            close()
+
 
 class _LegacyAdapterFactory:
     def __init__(

@@ -307,6 +307,27 @@ adapter/network operations are observed through the same cancellation boundary.
 an event is set or a callback returns `True` once, that stream remains cancelled and
 cannot later report a healthy completion.
 
+`close()` intentionally returns promptly: it signals every worker, closes registered
+adapter transports, and schedules cleanup without waiting for an uncooperative
+third-party call. When an application must prove that no managed resource remains
+active, follow it with a bounded wait and inspect the immutable diagnostics:
+
+```python
+stream.close()
+diagnostics = stream.wait_closed(timeout=2)
+if not diagnostics.quiescent:
+    print("still stopping:", diagnostics.active_operations)
+if diagnostics.cleanup_errors:
+    print("transport cleanup failed:", diagnostics.cleanup_errors)
+```
+
+`wait_closed()` never cancels work itself and always requires a finite,
+non-negative timeout. `stream.diagnostics` provides the same snapshot without
+waiting. Worker, blocking-operation, and adapter-cleanup threads are daemon threads;
+their names and counts are exposed for shutdown monitoring rather than hidden.
+Closing is idempotent: once `close(acknowledge=False)` has stopped a stream, a later
+close call cannot retroactively acknowledge its last event.
+
 ```python
 from threading import Event
 
@@ -392,11 +413,12 @@ from jobstreaming import (
     JobResponse,
     Resumable,
     ResumeGranularity,
+    Scraper,
     SearchFilter,
     stream_search,
 )
 
-class InternalJobs:
+class InternalJobs(Scraper):
     identifier = AdapterId("company.internal_jobs")
     capabilities = AdapterCapabilities(
         filters=frozenset({SearchFilter.SEARCH_TERM}),
@@ -407,7 +429,8 @@ class InternalJobs:
     )
 
     def __init__(self, proxies=None, ca_cert=None, user_agent=None, **kwargs):
-        self.site = self.identifier
+        super().__init__(self.identifier)
+        self.session = self.track_transport(make_internal_session())
 
     def scrape(self, request, context=None):
         for job in fetch_internal_jobs(request):
@@ -434,6 +457,17 @@ built-in `Site`. Resume granularities are also open to third-party values; space
 hyphens normalize to underscores, so the legacy `"continuation token"` value becomes
 `ResumeGranularity("continuation_token")`.
 
+Register every closeable client/session with `track_transport()`, including sessions
+created lazily or inside detail-worker threads. The base `Scraper.close()` closes each
+registered transport once; adapters with additional resources can override `close()`
+and call `super().close()`. Use `transport_scope()` around a bounded page/detail batch
+so its thread-local sessions are released before the next page. Scopes are reentrant
+and serialize overlapping batches on the same adapter, preventing one batch from
+closing transports owned by another. A transport registered after adapter shutdown is
+closed and rejected with `RuntimeError`; it is never returned to adapter code as a
+usable client. Transport close failures remain visible in
+`stream.diagnostics.cleanup_errors`, including failures from late registration races.
+
 `Site` arguments and built-in site strings remain compatible. The legacy
 `supports_resume` / `resume_granularity` constructor fields still parse with a
 `DeprecationWarning`; migrate to `resume=Resumable(...)` or `resume=NoResume()`.
@@ -448,8 +482,8 @@ Adapters should implement `scrape(request, context=None)`. Runtime execution no 
 inspects method signatures. Registration temporarily detects the old
 `scrape(request)` form and warns; use `legacy_adapter(factory)` as an explicit
 non-resumable bridge while migrating. That bridge preserves declared filters and
-job-type support while disabling resume. Implicit legacy detection is scheduled for
-removal in 1.0.
+job-type support while disabling resume, and forwards lifecycle cleanup to a wrapped
+adapter's `close()` hook. Implicit legacy detection is scheduled for removal in 1.0.
 
 The distribution includes `py.typed`, so consumers can type-check protocol
 implementations and capability declarations.

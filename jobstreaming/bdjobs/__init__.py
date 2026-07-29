@@ -79,7 +79,7 @@ class BDJobs(Scraper):
         if self.user_agent:
             request_headers["User-Agent"] = self.user_agent
         session.headers.update(request_headers)
-        return session
+        return self.track_transport(session)
 
     def scrape(
         self, scraper_input: ScraperInput, context: ScrapeContext | None = None
@@ -113,9 +113,10 @@ class BDJobs(Scraper):
                 for index, card in enumerate(cards)
                 if raw_seen + index >= scraper_input.offset
             ]
-            with ThreadPoolExecutor(
-                max_workers=min(8, max(1, len(candidates)))
-            ) as pool:
+            with (
+                self.transport_scope(),
+                ThreadPoolExecutor(max_workers=min(8, max(1, len(candidates)))) as pool,
+            ):
                 futures = {
                     pool.submit(self._process_job, card): card for card in candidates
                 }

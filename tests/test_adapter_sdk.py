@@ -174,6 +174,36 @@ def test_legacy_signature_detection_is_deprecated_and_kept_out_of_runtime() -> N
     assert explicit.create(Site.INDEED).capabilities.resume == NoResume()
 
 
+def test_legacy_adapter_bridge_forwards_lifecycle_cleanup() -> None:
+    close_count = 0
+
+    class LegacyAdapter(Scraper):
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            super().__init__(Site.INDEED)
+
+        def scrape(self, scraper_input) -> JobResponse:
+            del scraper_input
+            return JobResponse()
+
+        def close(self) -> None:
+            nonlocal close_count
+            close_count += 1
+
+    registry = AdapterRegistry()
+    registry.register(Site.INDEED, legacy_adapter(LegacyAdapter))
+
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=registry,
+    ) as stream:
+        list(stream)
+        diagnostics = stream.wait_closed(1)
+
+    assert close_count == 1
+    assert diagnostics.quiescent is True
+
+
 def test_callable_factory_legacy_signature_is_adapted_on_first_creation() -> None:
     class LegacyAdapter(Scraper):
         def __init__(self) -> None:

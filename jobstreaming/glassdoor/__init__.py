@@ -96,7 +96,9 @@ class Glassdoor(Scraper):
         context = ScrapeContext.local(self.site, scraper_input, context)
         self.base_url = self.scraper_input.country.get_glassdoor_url()
 
-        self.session = create_session(proxies=self.proxies, ca_cert=self.ca_cert)
+        self.session = self.track_transport(
+            create_session(proxies=self.proxies, ca_cert=self.ca_cert)
+        )
         token = self.csrf_token or self._get_csrf_token()
         if not token:
             raise AuthenticationConfigurationError(
@@ -205,9 +207,12 @@ class Glassdoor(Scraper):
             for index, job in enumerate(jobs_data)
             if (page_num - 1) * self.jobs_per_page + index >= scraper_input.offset
         ]
-        with ThreadPoolExecutor(
-            max_workers=min(self.jobs_per_page, max(1, len(candidates)))
-        ) as executor:
+        with (
+            self.transport_scope(),
+            ThreadPoolExecutor(
+                max_workers=min(self.jobs_per_page, max(1, len(candidates)))
+            ) as executor,
+        ):
             future_to_job_data = {
                 executor.submit(self._process_job, job): job for job in candidates
             }
@@ -432,7 +437,9 @@ class Glassdoor(Scraper):
     def _get_detail_session(self):
         session = getattr(self._thread_local, "session", None)
         if session is None:
-            session = create_session(proxies=self.proxies, ca_cert=self.ca_cert)
+            session = self.track_transport(
+                create_session(proxies=self.proxies, ca_cert=self.ca_cert)
+            )
             session.headers.update(self._headers)
             self._thread_local.session = session
         return session

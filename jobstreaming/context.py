@@ -45,6 +45,38 @@ CancellationCallback = Callable[[], bool]
 _Result = TypeVar("_Result")
 
 
+class _ThreadTracker:
+    """Own daemon threads and expose bounded, race-safe lifecycle snapshots."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._threads: list[threading.Thread] = []
+
+    def start(self, *, name: str, target: Callable[[], None]) -> threading.Thread:
+        thread = threading.Thread(target=target, name=name, daemon=True)
+        with self._lock:
+            self._threads.append(thread)
+        try:
+            thread.start()
+        except BaseException:
+            with self._lock:
+                self._threads.remove(thread)
+            raise
+        return thread
+
+    @property
+    def started_count(self) -> int:
+        with self._lock:
+            return len(self._threads)
+
+    def active_threads(self) -> tuple[threading.Thread, ...]:
+        with self._lock:
+            return tuple(thread for thread in self._threads if thread.is_alive())
+
+    def active_names(self) -> tuple[str, ...]:
+        return tuple(thread.name for thread in self.active_threads())
+
+
 class _CancellationController:
     """Combines stream close, a caller event, and a caller callback."""
 
@@ -60,6 +92,7 @@ class _CancellationController:
         self._cancel_callback = cancel_callback
         self._external_cancelled = threading.Event()
         self._callback_lock = threading.Lock()
+        self._operation_start_lock = threading.RLock()
 
     @property
     def externally_cancelled(self) -> bool:
@@ -81,8 +114,30 @@ class _CancellationController:
     def cancelled(self) -> bool:
         return self._stop_event.is_set() or self.externally_cancelled
 
+    @property
+    def requested(self) -> bool:
+        """Read cancellation state without invoking a caller callback."""
+
+        return (
+            self._stop_event.is_set()
+            or self._external_cancelled.is_set()
+            or (self._cancel_event is not None and self._cancel_event.is_set())
+        )
+
     def stop(self) -> None:
-        self._stop_event.set()
+        with self._operation_start_lock:
+            self._stop_event.set()
+
+    def start_unless_cancelled(
+        self,
+        start: Callable[[], _Result],
+    ) -> _Result | None:
+        """Linearize owned operation starts against stream shutdown."""
+
+        with self._operation_start_lock:
+            if self.cancelled or self._stop_event.is_set():
+                return None
+            return start()
 
     def wait(self, seconds: float) -> bool:
         """Return true if cancellation occurs before the timeout."""
@@ -110,6 +165,7 @@ class ScrapeContext:
         cancel_event: threading.Event | None = None,
         cancel_callback: CancellationCallback | None = None,
         cancellation: _CancellationController | None = None,
+        operation_threads: _ThreadTracker | None = None,
     ) -> None:
         self.site = site
         self.request = request
@@ -122,6 +178,7 @@ class ScrapeContext:
         self._state = thaw_state(freeze_state(checkpoint.state)) if checkpoint else {}
         self._seen = set(checkpoint.seen_job_keys) if checkpoint else set()
         self._lock = threading.Lock()
+        self._operation_threads = operation_threads or _ThreadTracker()
 
     @classmethod
     def local(
@@ -162,7 +219,12 @@ class ScrapeContext:
             return self.should_continue
         return not self._cancellation.wait(seconds) and self.should_continue
 
-    def run_interruptibly(self, operation: Callable[[], _Result]) -> _Result:
+    def run_interruptibly(
+        self,
+        operation: Callable[[], _Result],
+        *,
+        on_started: Callable[[], None] | None = None,
+    ) -> _Result:
         """Run a potentially blocking adapter operation behind cancellation."""
 
         completed: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
@@ -173,12 +235,17 @@ class ScrapeContext:
             except BaseException as exc:
                 completed.put((False, exc))
 
-        thread = threading.Thread(
-            target=invoke,
-            name=f"jobstreaming-network-{self.site.value}",
-            daemon=True,
-        )
-        thread.start()
+        def start() -> threading.Thread:
+            thread = self._operation_threads.start(
+                name=f"jobstreaming-network-{self.site.value}",
+                target=invoke,
+            )
+            if on_started is not None:
+                on_started()
+            return thread
+
+        if self._cancellation.start_unless_cancelled(start) is None:
+            raise StreamCancelledError("Search stream was cancelled")
         while not self.cancelled:
             try:
                 succeeded, result = completed.get(timeout=0.05)

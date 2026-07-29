@@ -66,7 +66,7 @@ from jobstreaming.model import (
 )
 from jobstreaming.protocols import Adapter, AdapterFactory
 from jobstreaming.registry import AdapterRegistry, default_registry, legacy_adapter
-from jobstreaming.runtime import AckMode, ScrapeContext, SearchStream
+from jobstreaming.runtime import AckMode, ScrapeContext, SearchStream, StreamDiagnostics
 from jobstreaming.testing import (
     AdapterContractViolation,
     AdapterRun,
@@ -131,6 +131,7 @@ __all__ = [
     "Site",
     "SiteCompleteEvent",
     "StreamCancelledError",
+    "StreamDiagnostics",
     "TransientNetworkError",
     "UnacknowledgedEventError",
     "WarningEvent",
