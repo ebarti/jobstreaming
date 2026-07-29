@@ -35,6 +35,7 @@ body:
       options:
         - stream_search
         - stream_jobs
+        - collect_jobs
         - scrape_jobs
         - CheckpointStore or resume behavior
         - AdapterRegistry or custom adapter
