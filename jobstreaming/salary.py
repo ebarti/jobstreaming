@@ -52,7 +52,14 @@ _NON_COMPENSATION_CONTEXT_PATTERN = re.compile(
     r"\b(?:budget|costs?|revenue|turnover|" r"(?:contract|project|deal)\s+value)\b",
     re.IGNORECASE,
 )
-_SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?:\n+|[.!?;](?=\s|$))")
+_SENTENCE_BOUNDARY_PATTERN = re.compile(
+    r"(?:"
+    r"\r\n?|\n|[\u2028\u2029]|"
+    r"</?(?:br|p|div|li|h[1-6]|td|th|tr|section|article)\b[^>]*>|"
+    r"[.!?;](?=\s|$)"
+    r")",
+    re.IGNORECASE,
+)
 
 _INTERVAL_PATTERNS = {
     CompensationInterval.HOURLY: re.compile(

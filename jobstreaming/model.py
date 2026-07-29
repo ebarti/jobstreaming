@@ -392,6 +392,13 @@ class JobPost(FrozenModel):
             self.salary_source is not None or self.salary_provenance is not None
         ):
             raise ValueError("salary metadata requires compensation")
+        if (
+            self.salary_source is SalarySource.DESCRIPTION
+            and self.salary_provenance is None
+        ):
+            raise ValueError(
+                "description salary source requires salary provenance with evidence"
+            )
         if self.salary_provenance is not None:
             if self.salary_source is None:
                 raise ValueError("salary provenance requires salary_source")

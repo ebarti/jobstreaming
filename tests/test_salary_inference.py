@@ -190,6 +190,42 @@ def test_conservative_salary_parser_rejects_ambiguous_or_non_salary_ranges(
 
 
 @pytest.mark.parametrize(
+    "boundary",
+    [
+        "\r\n",
+        "\r",
+        "\n",
+        "\u2028",
+        "\u2029",
+        "<br>",
+        "<br/>",
+        '<BR class="line-break">',
+        "</p><p>",
+        "</div><div>",
+        "</li><li>",
+        "</h2><h3>",
+        "</td><td>",
+        "</tr><tr>",
+        "</section><article>",
+    ],
+)
+@pytest.mark.parametrize(
+    "unrelated_interval_text",
+    [
+        "Schedule per week",
+        "20 vacation days are available per year",
+    ],
+)
+def test_conservative_salary_parser_does_not_cross_line_or_html_boundaries(
+    boundary: str,
+    unrelated_interval_text: str,
+) -> None:
+    text = f"Salary: USD 50,000 - 70,000{boundary}" f"{unrelated_interval_text}"
+
+    assert infer_salary_from_text(text) is None
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "Salary: ₹20 - ₹30 per hour",
@@ -392,6 +428,24 @@ def test_salary_provenance_requires_matching_compensation_metadata() -> None:
             ),
             salary_source=SalarySource.DIRECT_DATA,
             salary_provenance=provenance,
+        )
+
+
+def test_description_salary_source_requires_provenance_at_job_boundary() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="description salary source requires salary provenance",
+    ):
+        JobPost(
+            title="Engineer",
+            job_url="https://example.test/jobs/missing-description-evidence",
+            compensation=Compensation(
+                interval=CompensationInterval.YEARLY,
+                min_amount=80_000,
+                max_amount=100_000,
+                currency="USD",
+            ),
+            salary_source=SalarySource.DESCRIPTION,
         )
 
 
