@@ -15,6 +15,9 @@ poetry run ruff check jobstreaming tests scripts
 poetry run mypy
 poetry run black --check jobstreaming tests scripts
 poetry build
+python scripts/verify_release_artifacts.py \
+  --expected-version "$(poetry version --short)" \
+  --dist-dir dist
 ```
 
 The continuous-integration matrix runs on Python 3.10 through 3.14.
@@ -45,6 +48,8 @@ changes.
 
 Use [GitHub issues](https://github.com/ebarti/jobstreaming/issues) for non-sensitive
 bugs and support questions. Follow [SECURITY.md](SECURITY.md) for vulnerabilities.
+Maintainers should follow [RELEASING.md](RELEASING.md) for the tag, provenance, and
+post-publication verification contract.
 
 By contributing, you agree that your contribution is provided under the repository's
 MIT license.

@@ -124,20 +124,20 @@ def test_structural_adapter_protocol_streams_a_custom_site() -> None:
 def test_custom_identifier_round_trips_through_sqlite_and_outcomes(tmp_path) -> None:
     registry = AdapterRegistry()
     registry.register(CUSTOM_ID, FixtureAdapter)
-    path = tmp_path / "custom-adapter.sqlite3"
+    store = SqliteCheckpointStore(tmp_path / "custom-adapter.sqlite3")
     request = SearchRequest(site_type=(CUSTOM_ID,), results_wanted=1)
 
     outcome = collect_jobs(
         request,
         registry=registry,
-        checkpoint_store=SqliteCheckpointStore(path),
+        checkpoint_store=store,
     )
 
     assert [(item.site, item.job.id) for item in outcome.jobs] == [
         (CUSTOM_ID, "acme-1")
     ]
     assert outcome.summary_for(CUSTOM_ID).completed is True
-    checkpoint = SqliteCheckpointStore(path).load()
+    checkpoint = store.load()
     assert checkpoint is not None
     assert checkpoint.adapters[CUSTOM_ID.value].site == CUSTOM_ID
     assert checkpoint.generation != "legacy"
@@ -196,6 +196,36 @@ def test_legacy_signature_detection_is_deprecated_and_kept_out_of_runtime() -> N
     explicit = AdapterRegistry()
     explicit.register(Site.INDEED, legacy_adapter(LegacyAdapter))
     assert explicit.create(Site.INDEED).capabilities.resume == NoResume()
+
+
+def test_legacy_adapter_bridge_forwards_lifecycle_cleanup() -> None:
+    close_count = 0
+
+    class LegacyAdapter(Scraper):
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            super().__init__(Site.INDEED)
+
+        def scrape(self, scraper_input) -> JobResponse:
+            del scraper_input
+            return JobResponse()
+
+        def close(self) -> None:
+            nonlocal close_count
+            close_count += 1
+
+    registry = AdapterRegistry()
+    registry.register(Site.INDEED, legacy_adapter(LegacyAdapter))
+
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=registry,
+    ) as stream:
+        list(stream)
+        diagnostics = stream.wait_closed(1)
+
+    assert close_count == 1
+    assert diagnostics.quiescent is True
 
 
 def test_callable_factory_legacy_signature_is_adapted_on_first_creation() -> None:

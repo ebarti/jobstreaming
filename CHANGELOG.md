@@ -11,7 +11,8 @@ still change when upstream boards drift.
 - Value-level adapter capability warnings for unsupported job types.
 - Public security, contribution, support, and adapter-configuration guidance.
 - `Retry-After` metadata on retryable terminal error events.
-- Isolated wheel and source-distribution consumer checks in the release workflow.
+- Isolated wheel and source-distribution consumer checks in CI and the release
+  workflow.
 - Bounded `wait_closed()` lifecycle diagnostics and adapter transport ownership.
 - Transactional `SqliteCheckpointStore` persistence with compare-and-swap revisions
   and incremental seen-key acknowledgements.
@@ -19,6 +20,8 @@ still change when upstream boards drift.
 - DataFrame-independent `collect_jobs()` outcomes with sourced jobs, invocation-local
   per-site counters, chronological failures, explicit partial/failed status, and
   aggregate `SearchFailedError` strict mode; cancellation remains distinct.
+- SHA-256 release checksums and GitHub-hosted SLSA build provenance for wheel and
+  source distributions.
 - Open, validated custom adapter identifiers plus an `Adapter` protocol and offline
   `AdapterTestKit`.
 - Typed search-filter and resume-capability declarations, a `py.typed` marker, and a
@@ -52,6 +55,8 @@ still change when upstream boards drift.
   `description_salary_policy="conservative"`.
 - Structured board compensation always takes precedence over description inference,
   and batch rows expose flattened salary provenance fields.
+- PyPI releases use a separated, least-privilege Trusted Publishing job with
+  attestations enabled.
 
 ### Fixed
 
