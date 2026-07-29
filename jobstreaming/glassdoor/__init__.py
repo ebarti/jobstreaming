@@ -25,9 +25,12 @@ from jobstreaming.model import (
     DescriptionFormat,
     JobPost,
     JobResponse,
+    Resumable,
+    ResumeGranularity,
     SalarySource,
     Scraper,
     ScraperInput,
+    SearchFilter,
     Site,
 )
 from jobstreaming.runtime import ScrapeContext
@@ -46,18 +49,16 @@ class Glassdoor(Scraper):
     capabilities = AdapterCapabilities(
         filters=frozenset(
             {
-                "location",
-                "is_remote",
-                "job_type",
-                "easy_apply",
-                "offset",
-                "hours_old",
-                "description_format",
+                SearchFilter.LOCATION,
+                SearchFilter.IS_REMOTE,
+                SearchFilter.JOB_TYPE,
+                SearchFilter.EASY_APPLY,
+                SearchFilter.OFFSET,
+                SearchFilter.HOURS_OLD,
+                SearchFilter.DESCRIPTION_FORMAT,
             }
         ),
-        supports_resume=True,
-        resume_granularity="page",
-        cursor_schema_version=1,
+        resume=Resumable(granularity=ResumeGranularity.PAGE),
     )
 
     def __init__(
