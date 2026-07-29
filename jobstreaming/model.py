@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import warnings
 from abc import ABC, abstractmethod
 from datetime import date
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar, Literal, TypeAlias, cast
 
 from pydantic import (
     BaseModel,
@@ -14,6 +16,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import core_schema
 
 
 class JobType(Enum):
@@ -64,7 +67,7 @@ class JobType(Enum):
 
     @property
     def canonical(self) -> str:
-        return self.value[0]
+        return cast(str, self.value[0])
 
     @classmethod
     def from_string(cls, value: str) -> JobType:
@@ -366,8 +369,85 @@ class Site(str, Enum):
             raise ValueError(f"Unsupported site: {value!r}") from exc
 
 
+class AdapterId(str):
+    """Validated identifier for a third-party adapter."""
+
+    _PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+
+    def __new__(cls, value: str) -> AdapterId:
+        normalized = value.strip().lower()
+        if (
+            not normalized
+            or len(normalized) > 64
+            or not cls._PATTERN.fullmatch(normalized)
+        ):
+            raise ValueError(
+                "adapter identifier must be 1-64 lowercase letters, digits, "
+                "dots, underscores, or hyphens and start with a letter"
+            )
+        try:
+            built_in = Site.from_string(normalized)
+        except ValueError:
+            pass
+        else:
+            raise ValueError(
+                f"{normalized!r} is built in; use Site.{built_in.name} instead"
+            )
+        return str.__new__(cls, normalized)
+
+    @property
+    def value(self) -> str:
+        return str(self)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        source_type: Any,
+        handler: Any,
+    ) -> core_schema.CoreSchema:
+        del source_type, handler
+        return core_schema.no_info_after_validator_function(
+            cls,
+            core_schema.str_schema(),
+            serialization=core_schema.to_string_ser_schema(),
+        )
+
+
+AdapterIdentifier: TypeAlias = Site | AdapterId
+AdapterIdentifierInput: TypeAlias = Site | AdapterId | str
+
+
+def parse_adapter_identifier(value: AdapterIdentifierInput) -> AdapterIdentifier:
+    if isinstance(value, (Site, AdapterId)):
+        return value
+    try:
+        return Site.from_string(value)
+    except ValueError:
+        return AdapterId(value)
+
+
+class SearchFilter(str, Enum):
+    SEARCH_TERM = "search_term"
+    GOOGLE_SEARCH_TERM = "google_search_term"
+    LOCATION = "location"
+    COUNTRY = "country"
+    DISTANCE = "distance"
+    IS_REMOTE = "is_remote"
+    JOB_TYPE = "job_type"
+    EASY_APPLY = "easy_apply"
+    OFFSET = "offset"
+    LINKEDIN_FETCH_DESCRIPTION = "linkedin_fetch_description"
+    LINKEDIN_COMPANY_IDS = "linkedin_company_ids"
+    DESCRIPTION_FORMAT = "description_format"
+    REQUEST_TIMEOUT = "request_timeout"
+    RESULTS_WANTED = "results_wanted"
+    HOURS_OLD = "hours_old"
+    MAX_PAGES = "max_pages"
+    ENFORCE_ANNUAL_SALARY = "enforce_annual_salary"
+
+
 class SearchRequest(FrozenModel):
-    site_type: tuple[Site, ...]
+    site_type: tuple[AdapterIdentifier, ...]
     search_term: str | None = None
     google_search_term: str | None = None
     location: str | None = None
@@ -386,15 +466,34 @@ class SearchRequest(FrozenModel):
     max_pages: int = Field(default=50, ge=1, le=1_000)
     enforce_annual_salary: bool = False
 
+    @field_validator("site_type", mode="before")
+    @classmethod
+    def parse_sites(cls, sites: Any) -> Any:
+        if isinstance(sites, (str, Site, AdapterId)):
+            sites = (sites,)
+        return tuple(parse_adapter_identifier(site) for site in sites)
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def restore_country_enum(cls, country: Any) -> Any:
+        return tuple(country) if isinstance(country, list) else country
+
+    @field_validator("job_type", mode="before")
+    @classmethod
+    def restore_job_type_enum(cls, job_type: Any) -> Any:
+        return tuple(job_type) if isinstance(job_type, list) else job_type
+
     @field_validator("site_type")
     @classmethod
-    def validate_sites(cls, sites: tuple[Site, ...]) -> tuple[Site, ...]:
+    def validate_sites(
+        cls, sites: tuple[AdapterIdentifier, ...]
+    ) -> tuple[AdapterIdentifier, ...]:
         if not sites:
             raise ValueError("at least one site is required")
         return tuple(dict.fromkeys(sites))
 
     @property
-    def sites(self) -> tuple[Site, ...]:
+    def sites(self) -> tuple[AdapterIdentifier, ...]:
         return self.site_type
 
     def fingerprint(self) -> str:
@@ -407,31 +506,137 @@ class SearchRequest(FrozenModel):
 ScraperInput = SearchRequest
 
 
-class AdapterCapabilities(FrozenModel):
-    filters: frozenset[str] = frozenset()
-    supported_job_types: frozenset[JobType] | None = None
-    supports_resume: bool = False
-    resume_granularity: str | None = None
+class ResumeGranularity(str):
+    """Open, validated resume boundary identifier for built-in and custom adapters."""
+
+    LISTING: ClassVar[ResumeGranularity]
+    PAGE: ClassVar[ResumeGranularity]
+    CURSOR: ClassVar[ResumeGranularity]
+    CONTINUATION_TOKEN: ClassVar[ResumeGranularity]
+
+    _PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+
+    def __new__(cls, value: str) -> ResumeGranularity:
+        normalized = re.sub(r"[\s-]+", "_", value.strip().lower())
+        normalized = re.sub(r"_+", "_", normalized)
+        if (
+            not normalized
+            or len(normalized) > 64
+            or not cls._PATTERN.fullmatch(normalized)
+        ):
+            raise ValueError(
+                "resume granularity must be 1-64 lowercase letters, digits, "
+                "or underscores and start with a letter"
+            )
+        return str.__new__(cls, normalized)
+
+    @property
+    def value(self) -> str:
+        return str(self)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        source_type: Any,
+        handler: Any,
+    ) -> core_schema.CoreSchema:
+        del source_type, handler
+        return core_schema.no_info_after_validator_function(
+            cls,
+            core_schema.str_schema(),
+            serialization=core_schema.to_string_ser_schema(),
+        )
+
+
+ResumeGranularity.LISTING = ResumeGranularity("listing")
+ResumeGranularity.PAGE = ResumeGranularity("page")
+ResumeGranularity.CURSOR = ResumeGranularity("cursor")
+ResumeGranularity.CONTINUATION_TOKEN = ResumeGranularity("continuation_token")
+
+
+class NoResume(FrozenModel):
+    kind: Literal["none"] = "none"
+
+
+class Resumable(FrozenModel):
+    kind: Literal["resumable"] = "resumable"
+    granularity: ResumeGranularity
     cursor_schema_version: int = Field(default=1, ge=1)
 
-    @model_validator(mode="after")
-    def validate_declarations(self) -> AdapterCapabilities:
-        request_filters = set(SearchRequest.model_fields) - {"site_type"}
-        unknown_filters = self.filters - request_filters
-        if unknown_filters:
-            unknown = ", ".join(sorted(unknown_filters))
-            raise ValueError(f"unknown adapter filters: {unknown}")
-        if self.supported_job_types is not None and "job_type" not in self.filters:
-            raise ValueError(
-                "supported_job_types requires the job_type filter capability"
-            )
-        if self.supports_resume and not self.resume_granularity:
+
+ResumeSupport: TypeAlias = NoResume | Resumable
+
+
+class AdapterCapabilities(FrozenModel):
+    filters: frozenset[SearchFilter] = frozenset()
+    supported_job_types: frozenset[JobType] | None = None
+    resume: ResumeSupport = Field(default_factory=NoResume, discriminator="kind")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_resume_declaration(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        legacy_fields = {
+            "supports_resume",
+            "resume_granularity",
+            "cursor_schema_version",
+        }
+        if not legacy_fields.intersection(value):
+            return value
+        migrated = dict(value)
+        supports_resume = bool(migrated.pop("supports_resume", False))
+        granularity = migrated.pop("resume_granularity", None)
+        cursor_schema_version = migrated.pop("cursor_schema_version", 1)
+        if supports_resume and granularity is None:
             raise ValueError(
                 "resume_granularity is required when supports_resume is true"
             )
-        if not self.supports_resume and self.resume_granularity is not None:
+        if not supports_resume and granularity is not None:
             raise ValueError("resume_granularity requires supports_resume to be true")
+        warnings.warn(
+            "supports_resume, resume_granularity, and cursor_schema_version are "
+            "deprecated; pass resume=Resumable(...) or resume=NoResume()",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        migrated["resume"] = (
+            {
+                "kind": "resumable",
+                "granularity": granularity,
+                "cursor_schema_version": cursor_schema_version,
+            }
+            if supports_resume
+            else {"kind": "none"}
+        )
+        return migrated
+
+    @model_validator(mode="after")
+    def validate_declarations(self) -> AdapterCapabilities:
+        if (
+            self.supported_job_types is not None
+            and SearchFilter.JOB_TYPE not in self.filters
+        ):
+            raise ValueError(
+                "supported_job_types requires the job_type filter capability"
+            )
         return self
+
+    @property
+    def supports_resume(self) -> bool:
+        return isinstance(self.resume, Resumable)
+
+    @property
+    def resume_granularity(self) -> ResumeGranularity | None:
+        return self.resume.granularity if isinstance(self.resume, Resumable) else None
+
+    @property
+    def cursor_schema_version(self) -> int:
+        return (
+            self.resume.cursor_schema_version
+            if isinstance(self.resume, Resumable)
+            else 1
+        )
 
 
 class Scraper(ABC):
@@ -439,7 +644,7 @@ class Scraper(ABC):
 
     def __init__(
         self,
-        site: Site,
+        site: AdapterIdentifier,
         proxies: list[str] | str | None = None,
         ca_cert: str | None = None,
         user_agent: str | None = None,

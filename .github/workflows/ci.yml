@@ -51,6 +51,9 @@ jobs:
       - name: Run Ruff
         run: poetry run ruff check jobstreaming tests scripts
 
+      - name: Type-check adapter SDK and runtime contracts
+        run: poetry run mypy
+
       - name: Check formatting
         run: poetry run black --check jobstreaming tests scripts
 
@@ -81,3 +84,12 @@ jobs:
           python scripts/verify_release_artifacts.py
           --expected-version "$(poetry version --short)"
           --dist-dir dist
+
+      - name: Verify installed SDK annotations
+        shell: bash
+        run: |
+          consumer="${RUNNER_TEMP}/jobstreaming-sdk-consumer"
+          python -m venv "$consumer"
+          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.whl
+          cd "$RUNNER_TEMP"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"

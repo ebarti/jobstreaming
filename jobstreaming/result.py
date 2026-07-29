@@ -5,13 +5,13 @@ from collections.abc import Iterable
 import pandas as pd
 
 from jobstreaming.model import (
+    AdapterIdentifier,
     Compensation,
     CompensationInterval,
     Country,
     JobPost,
     SalarySource,
     SearchRequest,
-    Site,
 )
 from jobstreaming.util import desired_order, extract_salary
 
@@ -67,7 +67,7 @@ def normalize_job(job: JobPost, request: SearchRequest) -> JobPost:
     )
 
 
-def job_to_row(site: Site, job: JobPost) -> dict[str, object]:
+def job_to_row(site: AdapterIdentifier, job: JobPost) -> dict[str, object]:
     data = job.model_dump(mode="python")
     compensation = data.pop("compensation", None)
     data["site"] = site.value
@@ -90,7 +90,7 @@ def job_to_row(site: Site, job: JobPost) -> dict[str, object]:
 
 
 def jobs_to_dataframe(
-    jobs: Iterable[tuple[Site, JobPost]], request: SearchRequest
+    jobs: Iterable[tuple[AdapterIdentifier, JobPost]], request: SearchRequest
 ) -> pd.DataFrame:
     rows = [job_to_row(site, normalize_job(job, request)) for site, job in jobs]
     frame = pd.DataFrame.from_records(rows)

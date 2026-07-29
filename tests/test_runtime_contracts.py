@@ -21,6 +21,8 @@ from jobstreaming import (
     JobResponse,
     MemoryCheckpointStore,
     RateLimitError,
+    Resumable,
+    ResumeGranularity,
     Scraper,
     SearchCheckpoint,
     SearchRequest,
@@ -238,9 +240,10 @@ def test_overall_checkpoint_schema_is_validated() -> None:
 def test_adapter_cursor_schema_is_validated_before_workers_start() -> None:
     class UpgradedAdapter(_TwoJobAdapter):
         capabilities = AdapterCapabilities(
-            supports_resume=True,
-            resume_granularity="page",
-            cursor_schema_version=2,
+            resume=Resumable(
+                granularity=ResumeGranularity.PAGE,
+                cursor_schema_version=2,
+            )
         )
 
     request = SearchRequest(site_type=(Site.INDEED,))
@@ -258,9 +261,10 @@ def test_adapter_cursor_schema_is_validated_before_workers_start() -> None:
 def test_new_checkpoint_records_the_registered_adapter_cursor_schema() -> None:
     class UpgradedAdapter(_TwoJobAdapter):
         capabilities = AdapterCapabilities(
-            supports_resume=True,
-            resume_granularity="page",
-            cursor_schema_version=2,
+            resume=Resumable(
+                granularity=ResumeGranularity.PAGE,
+                cursor_schema_version=2,
+            )
         )
 
     store = MemoryCheckpointStore()

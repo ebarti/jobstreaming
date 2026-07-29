@@ -15,6 +15,10 @@ still change when upstream boards drift.
   workflow.
 - SHA-256 release checksums and GitHub-hosted SLSA build provenance for wheel and
   source distributions.
+- Open, validated custom adapter identifiers plus an `Adapter` protocol and offline
+  `AdapterTestKit`.
+- Typed search-filter and resume-capability declarations, a `py.typed` marker, and a
+  static type-check gate for the SDK/core runtime surface.
 
 ### Changed
 
@@ -29,6 +33,8 @@ still change when upstream boards drift.
   ignoring it.
 - Indeed, Naukri, ZipRecruiter, and Glassdoor no longer use package-embedded shared
   credentials or fallback tokens.
+- Runtime adapter calls no longer inspect `scrape` signatures; legacy signatures are
+  isolated behind a deprecated registration bridge.
 - PyPI releases use a separated, least-privilege Trusted Publishing job with
   attestations enabled.
 
@@ -38,6 +44,13 @@ still change when upstream boards drift.
   radius.
 - Unsupported Indeed and LinkedIn job-type values are omitted rather than raised or
   sent as empty parameters.
+- Legacy adapter bridges preserve registration cursor versions and non-resume
+  capability declarations.
+- Resume granularities retain legacy/custom values through a normalized, open value
+  object.
+- Adapter factories and instances fail with typed contract errors when identifiers,
+  capabilities, or scrape callables are malformed.
+- Public protocol annotations remain resolvable from installed distributions.
 
 ## [0.0.2] - 2026-07-17
 

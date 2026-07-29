@@ -37,6 +37,9 @@ from jobstreaming.exception import (
 )
 from jobstreaming.model import (
     AdapterCapabilities,
+    AdapterId,
+    AdapterIdentifier,
+    AdapterIdentifierInput,
     Compensation,
     CompensationInterval,
     Country,
@@ -45,19 +48,39 @@ from jobstreaming.model import (
     JobResponse,
     JobType,
     Location,
+    NoResume,
+    Resumable,
+    ResumeGranularity,
+    ResumeSupport,
     SalarySource,
     Scraper,
     ScraperInput,
+    SearchFilter,
     SearchRequest,
     Site,
+    parse_adapter_identifier,
 )
-from jobstreaming.registry import AdapterRegistry, default_registry
+from jobstreaming.protocols import Adapter, AdapterFactory
+from jobstreaming.registry import AdapterRegistry, default_registry, legacy_adapter
 from jobstreaming.runtime import AckMode, ScrapeContext, SearchStream
+from jobstreaming.testing import (
+    AdapterContractViolation,
+    AdapterRun,
+    AdapterTestKit,
+)
 
 __all__ = [
+    "Adapter",
     "AdapterCapabilities",
     "AdapterCheckpoint",
+    "AdapterContractViolation",
+    "AdapterFactory",
+    "AdapterId",
+    "AdapterIdentifier",
+    "AdapterIdentifierInput",
     "AdapterRegistry",
+    "AdapterRun",
+    "AdapterTestKit",
     "AckMode",
     "AuthenticationConfigurationError",
     "CheckpointCompatibilityError",
@@ -82,12 +105,17 @@ __all__ = [
     "InvalidRequestError",
     "Location",
     "MemoryCheckpointStore",
+    "NoResume",
     "ProgressEvent",
     "RateLimitError",
+    "Resumable",
+    "ResumeGranularity",
+    "ResumeSupport",
     "SalarySource",
     "ScrapeContext",
     "Scraper",
     "ScraperInput",
+    "SearchFilter",
     "SearchCheckpoint",
     "SearchCompleteEvent",
     "SearchRequest",
@@ -100,6 +128,8 @@ __all__ = [
     "WarningEvent",
     "build_search_request",
     "default_registry",
+    "legacy_adapter",
+    "parse_adapter_identifier",
     "scrape_jobs",
     "stream_jobs",
     "stream_search",

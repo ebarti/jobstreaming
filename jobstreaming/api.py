@@ -10,12 +10,15 @@ import pandas as pd
 from jobstreaming.checkpoint import CheckpointStore, JsonFileCheckpointStore
 from jobstreaming.events import ErrorEvent, JobEvent
 from jobstreaming.model import (
+    AdapterIdentifier,
+    AdapterIdentifierInput,
     Country,
     DescriptionFormat,
     JobPost,
     JobType,
     SearchRequest,
     Site,
+    parse_adapter_identifier,
 )
 from jobstreaming.registry import AdapterRegistry, default_registry
 from jobstreaming.result import jobs_to_dataframe
@@ -24,19 +27,27 @@ from jobstreaming.util import create_logger, set_logger_level
 
 
 def _parse_sites(
-    site_name: str | Site | list[str | Site] | tuple[str | Site, ...] | None,
-) -> tuple[Site, ...]:
+    site_name: (
+        AdapterIdentifierInput
+        | list[AdapterIdentifierInput]
+        | tuple[AdapterIdentifierInput, ...]
+        | None
+    ),
+) -> tuple[AdapterIdentifier, ...]:
     if site_name is None:
         return tuple(Site)
     raw_sites = site_name if isinstance(site_name, (list, tuple)) else (site_name,)
-    return tuple(
-        Site.from_string(site) if isinstance(site, str) else site for site in raw_sites
-    )
+    return tuple(parse_adapter_identifier(site) for site in raw_sites)
 
 
 def build_search_request(
     *,
-    site_name: str | Site | list[str | Site] | tuple[str | Site, ...] | None = None,
+    site_name: (
+        AdapterIdentifierInput
+        | list[AdapterIdentifierInput]
+        | tuple[AdapterIdentifierInput, ...]
+        | None
+    ) = None,
     search_term: str | None = None,
     google_search_term: str | None = None,
     location: str | None = None,
@@ -63,6 +74,11 @@ def build_search_request(
         if isinstance(country_indeed, str)
         else country_indeed
     )
+    parsed_description_format = (
+        DescriptionFormat(description_format)
+        if isinstance(description_format, str)
+        else description_format
+    )
     return SearchRequest(
         site_type=_parse_sites(site_name),
         country=country,
@@ -73,10 +89,12 @@ def build_search_request(
         is_remote=is_remote,
         job_type=parsed_job_type,
         easy_apply=easy_apply,
-        description_format=description_format,
+        description_format=parsed_description_format,
         linkedin_fetch_description=linkedin_fetch_description,
         results_wanted=results_wanted,
-        linkedin_company_ids=linkedin_company_ids,
+        linkedin_company_ids=(
+            tuple(linkedin_company_ids) if linkedin_company_ids is not None else None
+        ),
         offset=offset,
         hours_old=hours_old,
         enforce_annual_salary=enforce_annual_salary,
@@ -150,7 +168,7 @@ def stream_jobs(
 
 
 def scrape_jobs(
-    site_name: str | Site | list[str | Site] | None = None,
+    site_name: AdapterIdentifierInput | list[AdapterIdentifierInput] | None = None,
     search_term: str | None = None,
     google_search_term: str | None = None,
     location: str | None = None,
@@ -205,7 +223,7 @@ def scrape_jobs(
         request_timeout=request_timeout,
         max_pages=max_pages,
     )
-    jobs: list[tuple[Site, JobPost]] = []
+    jobs: list[tuple[AdapterIdentifier, JobPost]] = []
     errors: list[ErrorEvent] = []
     with stream_search(
         request,

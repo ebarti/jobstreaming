@@ -53,6 +53,28 @@ jobs:
           --expected-version "${GITHUB_REF_NAME#v}"
           --dist-dir dist
 
+      - name: Verify wheel SDK annotations
+        shell: bash
+        run: |
+          consumer="${RUNNER_TEMP}/jobstreaming-wheel-consumer"
+          python -m venv "$consumer"
+          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.whl
+          observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
+          test "$observed" = "${GITHUB_REF_NAME#v}"
+          cd "$RUNNER_TEMP"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+
+      - name: Verify source distribution SDK annotations
+        shell: bash
+        run: |
+          consumer="${RUNNER_TEMP}/jobstreaming-sdist-consumer"
+          python -m venv "$consumer"
+          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.tar.gz
+          observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
+          test "$observed" = "${GITHUB_REF_NAME#v}"
+          cd "$RUNNER_TEMP"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+
       - name: Assemble release payload
         shell: bash
         run: |
