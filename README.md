@@ -233,6 +233,44 @@ call therefore contains only jobs emitted during that invocation. For a durable 
 result set across restarts, use `stream_search` and upsert each `JobEvent` into your own
 store before acknowledging it.
 
+## Salary provenance and description inference
+
+Structured compensation returned by a board is authoritative and is never replaced by
+description text. Normalized jobs attach `salary_provenance` with the source,
+confidence, and—only for description-derived values—the matched evidence snippet:
+
+- `direct_data` is high confidence.
+- Board-provided `estimated` compensation is medium confidence.
+- Description-derived compensation is medium confidence and must be enabled
+  explicitly.
+
+Description inference is off by default. This replaces the earlier implicit US-only
+heuristic, which guessed an interval from numeric thresholds. Opt in per request:
+
+```python
+from jobstreaming import DescriptionSalaryPolicy, stream_jobs
+
+jobs = stream_jobs(
+    site_name="google",
+    search_term="platform engineer",
+    country_indeed="Spain",
+    description_salary_policy=DescriptionSalaryPolicy.CONSERVATIVE,
+)
+```
+
+The conservative parser requires a nearby compensation cue, a range, an explicit pay
+interval, and an explicit or country-resolved currency. It handles common English,
+Spanish, Catalan, French, German, Portuguese, and Italian compensation and interval
+terms plus localized thousands/decimal separators. Ambiguous dollar symbols are
+resolved only for USD, CAD, AUD, or NZD request countries; bonuses, commissions,
+equity, budgets, costs, revenue, contract values, missing intervals, and reversed
+ranges are rejected. `enforce_annual_salary=True` annualizes accepted compensation
+without changing its provenance.
+
+The batch schema exposes flattened `salary_source`, `salary_confidence`, and
+`salary_evidence` columns alongside `interval`, `min_amount`, `max_amount`, and
+`currency`.
+
 ## Events
 
 `stream_search` can yield:
