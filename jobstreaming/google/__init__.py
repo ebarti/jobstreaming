@@ -17,8 +17,11 @@ from jobstreaming.model import (
     JobResponse,
     JobType,
     Location,
+    Resumable,
+    ResumeGranularity,
     Scraper,
     ScraperInput,
+    SearchFilter,
     Site,
 )
 from jobstreaming.runtime import ScrapeContext
@@ -32,7 +35,15 @@ from jobstreaming.util import (
 
 class Google(Scraper):
     capabilities = AdapterCapabilities(
-        filters=frozenset({"location", "is_remote", "job_type", "offset", "hours_old"}),
+        filters=frozenset(
+            {
+                SearchFilter.LOCATION,
+                SearchFilter.IS_REMOTE,
+                SearchFilter.JOB_TYPE,
+                SearchFilter.OFFSET,
+                SearchFilter.HOURS_OLD,
+            }
+        ),
         supported_job_types=frozenset(
             {
                 JobType.FULL_TIME,
@@ -41,9 +52,7 @@ class Google(Scraper):
                 JobType.CONTRACT,
             }
         ),
-        supports_resume=True,
-        resume_granularity="cursor",
-        cursor_schema_version=1,
+        resume=Resumable(granularity=ResumeGranularity.CURSOR),
     )
 
     def __init__(

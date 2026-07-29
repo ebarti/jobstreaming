@@ -22,8 +22,11 @@ from jobstreaming.model import (
     JobPost,
     JobResponse,
     JobType,
+    Resumable,
+    ResumeGranularity,
     Scraper,
     ScraperInput,
+    SearchFilter,
     Site,
 )
 from jobstreaming.runtime import ScrapeContext
@@ -45,10 +48,8 @@ class BDJobs(Scraper):
     delay = 2
     band_delay = 3
     capabilities = AdapterCapabilities(
-        filters=frozenset({"offset", "description_format"}),
-        supports_resume=True,
-        resume_granularity="page",
-        cursor_schema_version=1,
+        filters=frozenset({SearchFilter.OFFSET, SearchFilter.DESCRIPTION_FORMAT}),
+        resume=Resumable(granularity=ResumeGranularity.PAGE),
     )
 
     def __init__(

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from jobstreaming import (
     AdapterCapabilities,
+    AdapterTestKit,
     CompensationInterval,
     Country,
     DescriptionFormat,
@@ -21,7 +22,6 @@ from jobstreaming.bdjobs import BDJobs
 from jobstreaming.exception import CursorExpiredError
 from jobstreaming.glassdoor import Glassdoor
 from jobstreaming.google import Google
-from tests.adapter_contract import assert_adapter_declaration
 
 FIXTURES = Path(__file__).with_name("fixtures")
 
@@ -31,36 +31,30 @@ def test_built_in_adapters_conform_to_the_shared_declaration_contract(
     site: Site,
 ) -> None:
     registry = default_registry()
-    factory = registry._factories[site]
+    factory = type(registry.create(site))
 
-    assert_adapter_declaration(registry, site, factory)
+    adapter = AdapterTestKit.assert_conforms(site, factory)
+
+    assert adapter.site is site
+    assert registry.cursor_schema_version(site) == (
+        adapter.capabilities.cursor_schema_version
+    )
 
 
 @pytest.mark.parametrize(
-    "capabilities",
+    "declaration",
     [
-        AdapterCapabilities.model_construct(
-            filters=frozenset({"not_a_request_filter"})
-        ),
-        AdapterCapabilities.model_construct(
-            filters=frozenset(),
-            supported_job_types=frozenset({JobType.FULL_TIME}),
-        ),
-        AdapterCapabilities.model_construct(
-            supports_resume=True,
-            resume_granularity=None,
-        ),
-        AdapterCapabilities.model_construct(
-            supports_resume=False,
-            resume_granularity="page",
-        ),
+        {"filters": {"not_a_request_filter"}},
+        {"supported_job_types": {JobType.FULL_TIME}},
+        {"resume": {"kind": "resumable"}},
+        {"resume": {"kind": "none", "granularity": "page"}},
     ],
 )
 def test_adapter_capability_declarations_reject_incoherent_states(
-    capabilities: AdapterCapabilities,
+    declaration: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        AdapterCapabilities.model_validate(capabilities.model_dump())
+        AdapterCapabilities.model_validate(declaration)
 
 
 class _Response:

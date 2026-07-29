@@ -322,25 +322,42 @@ job titles/URLs, and unsupported enum values are rejected at the boundary.
 
 ## Custom adapters
 
+The adapter SDK uses five domain terms:
+
+- **Adapter identifier**: a stable `AdapterId` for a custom source; built-in sources
+  continue to use `Site`.
+- **Search filter**: a `SearchFilter` the source genuinely applies.
+- **Resume support**: either `NoResume` or `Resumable` with an open, validated
+  `ResumeGranularity` value and cursor schema version.
+- **Adapter**: the structural `Adapter` protocol; inheritance is optional.
+- **Adapter test kit**: offline helpers that validate construction, identity, and
+  fixture-driven resume behavior without requiring pytest at runtime.
+
 ```python
 from jobstreaming import (
     AdapterCapabilities,
+    AdapterId,
     AdapterRegistry,
+    AdapterTestKit,
     JobResponse,
-    Scraper,
-    Site,
+    Resumable,
+    ResumeGranularity,
+    SearchFilter,
     stream_search,
 )
 
-class InternalJobs(Scraper):
+class InternalJobs:
+    identifier = AdapterId("company.internal_jobs")
     capabilities = AdapterCapabilities(
-        supports_resume=True,
-        resume_granularity="cursor",
-        cursor_schema_version=1,
+        filters=frozenset({SearchFilter.SEARCH_TERM}),
+        resume=Resumable(
+            granularity=ResumeGranularity.CURSOR,
+            cursor_schema_version=1,
+        ),
     )
 
-    def __init__(self, **kwargs):
-        super().__init__(Site.INDEED)  # this example replaces the Indeed adapter
+    def __init__(self, proxies=None, ca_cert=None, user_agent=None, **kwargs):
+        self.site = self.identifier
 
     def scrape(self, request, context=None):
         for job in fetch_internal_jobs(request):
@@ -348,10 +365,11 @@ class InternalJobs(Scraper):
         return JobResponse()
 
 registry = AdapterRegistry()
-registry.register(Site.INDEED, InternalJobs)
+registry.register(InternalJobs.identifier, InternalJobs)
+AdapterTestKit.assert_conforms(InternalJobs.identifier, InternalJobs)
 
 with stream_search(
-    site_name="indeed",
+    site_name=InternalJobs.identifier,
     registry=registry,
     search_term="engineer",
 ) as stream:
@@ -360,13 +378,31 @@ with stream_search(
 ```
 
 Increment `cursor_schema_version` whenever a deployed adapter can no longer interpret
-cursor state written by its previous implementation. Legacy adapters that only return
-`JobResponse` are still accepted, but their results cannot be streamed until that
-adapter returns.
+cursor state written by its previous implementation. Custom identifiers are validated,
+serialized as strings in requests/events/checkpoints, and must not collide with a
+built-in `Site`. Resume granularities are also open to third-party values; spaces and
+hyphens normalize to underscores, so the legacy `"continuation token"` value becomes
+`ResumeGranularity("continuation_token")`.
 
-The registry can replace any built-in adapter. Adding an entirely new site also
-requires adding that board to the `Site` enum so it participates in validation,
-fingerprinting, events, and checkpoints.
+`Site` arguments and built-in site strings remain compatible. The legacy
+`supports_resume` / `resume_granularity` constructor fields still parse with a
+`DeprecationWarning`; migrate to `resume=Resumable(...)` or `resume=NoResume()`.
+Adapters must expose `AdapterCapabilities`, and factories that declare capabilities
+must produce the same value. An ordinary function factory may omit a class-level
+declaration; registration then uses a provisional cursor schema version of 1 (or an
+explicit deprecated registration value) and validates the first produced instance
+before scraping. A discovered resume-schema mismatch fails instead of writing an
+incompatible checkpoint.
+
+Adapters should implement `scrape(request, context=None)`. Runtime execution no longer
+inspects method signatures. Registration temporarily detects the old
+`scrape(request)` form and warns; use `legacy_adapter(factory)` as an explicit
+non-resumable bridge while migrating. That bridge preserves declared filters and
+job-type support while disabling resume. Implicit legacy detection is scheduled for
+removal in 1.0.
+
+The distribution includes `py.typed`, so consumers can type-check protocol
+implementations and capability declarations.
 
 ## Development
 
@@ -375,6 +411,7 @@ poetry install
 poetry run pytest --cov
 poetry run python scripts/check_coverage.py
 poetry run ruff check jobstreaming tests scripts
+poetry run mypy
 poetry run black --check jobstreaming tests scripts
 poetry build
 ```

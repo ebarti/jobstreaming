@@ -80,8 +80,34 @@ source = ["jobstreaming"]
 show_missing = true
 skip_covered = true
 
+[tool.mypy]
+python_version = "3.10"
+files = [
+    "jobstreaming/__init__.py",
+    "jobstreaming/model.py",
+    "jobstreaming/protocols.py",
+    "jobstreaming/registry.py",
+    "jobstreaming/events.py",
+    "jobstreaming/checkpoint.py",
+    "jobstreaming/context.py",
+    "jobstreaming/runtime.py",
+    "jobstreaming/testing.py",
+    "jobstreaming/api.py",
+    "jobstreaming/result.py",
+    "tests/typing/adapter_sdk_contract.py",
+]
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_any_generics = true
+no_implicit_optional = true
+strict_equality = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_unused_configs = true
+
 [tool.poetry.group.dev.dependencies]
 black = ">=24.0"
+mypy = ">=1.15"
 pre-commit = ">=3.0"
 pytest = ">=8.0"
 pytest-cov = ">=6.0"

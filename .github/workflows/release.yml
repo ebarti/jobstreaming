@@ -48,7 +48,7 @@ jobs:
           observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
           test "$observed" = "${GITHUB_REF_NAME#v}"
           cd "$RUNNER_TEMP"
-          "$consumer/bin/python" -c 'from jobstreaming import SearchRequest, Site; assert SearchRequest(site_type=(Site.GOOGLE,)).sites == (Site.GOOGLE,)'
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
 
       - name: Verify source distribution through an isolated consumer install
         shell: bash
@@ -59,7 +59,7 @@ jobs:
           observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
           test "$observed" = "${GITHUB_REF_NAME#v}"
           cd "$RUNNER_TEMP"
-          "$consumer/bin/python" -c 'from jobstreaming import SearchRequest, Site; assert SearchRequest(site_type=(Site.GOOGLE,)).sites == (Site.GOOGLE,)'
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
 
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
