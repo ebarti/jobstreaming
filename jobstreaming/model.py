@@ -414,6 +414,25 @@ class AdapterCapabilities(FrozenModel):
     resume_granularity: str | None = None
     cursor_schema_version: int = Field(default=1, ge=1)
 
+    @model_validator(mode="after")
+    def validate_declarations(self) -> AdapterCapabilities:
+        request_filters = set(SearchRequest.model_fields) - {"site_type"}
+        unknown_filters = self.filters - request_filters
+        if unknown_filters:
+            unknown = ", ".join(sorted(unknown_filters))
+            raise ValueError(f"unknown adapter filters: {unknown}")
+        if self.supported_job_types is not None and "job_type" not in self.filters:
+            raise ValueError(
+                "supported_job_types requires the job_type filter capability"
+            )
+        if self.supports_resume and not self.resume_granularity:
+            raise ValueError(
+                "resume_granularity is required when supports_resume is true"
+            )
+        if not self.supports_resume and self.resume_granularity is not None:
+            raise ValueError("resume_granularity requires supports_resume to be true")
+        return self
+
 
 class Scraper(ABC):
     capabilities = AdapterCapabilities()
