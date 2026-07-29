@@ -16,6 +16,8 @@ still change when upstream boards drift.
   `AdapterTestKit`.
 - Typed search-filter and resume-capability declarations, a `py.typed` marker, and a
   static type-check gate for the SDK/core runtime surface.
+- A `batch` extra and typed `MissingOptionalDependencyError` for the optional
+  DataFrame compatibility API.
 
 ### Changed
 
@@ -32,6 +34,8 @@ still change when upstream boards drift.
   credentials or fallback tokens.
 - Runtime adapter calls no longer inspect `scrape` signatures; legacy signatures are
   isolated behind a deprecated registration bridge.
+- Pandas is no longer installed or imported by the default streaming package;
+  `jobstreaming[batch]` preserves the existing `scrape_jobs` DataFrame behavior.
 
 ### Fixed
 

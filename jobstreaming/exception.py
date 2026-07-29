@@ -82,6 +82,20 @@ class AuthenticationConfigurationError(JobStreamingError):
     code = ErrorCode.AUTHENTICATION_CONFIGURATION
 
 
+class MissingOptionalDependencyError(JobStreamingError):
+    """A public API requires an optional package extra that is not installed."""
+
+    def __init__(self, *, extra: str, dependency: str) -> None:
+        self.extra = extra
+        self.dependency = dependency
+        self.install_spec = f"jobstreaming[{extra}]"
+        super().__init__(
+            f"{dependency} is required for this operation; install "
+            f"{self.install_spec!r} (for example, "
+            f'pip install "{self.install_spec}")'
+        )
+
+
 class StreamCancelledError(JobStreamingError):
     code = ErrorCode.CANCELLED
 
