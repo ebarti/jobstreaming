@@ -40,7 +40,7 @@ from jobstreaming.exception import (
     _TransportCleanupError,
     classify_exception,
 )
-from jobstreaming.model import JobPost, Scraper, SearchRequest, Site
+from jobstreaming.model import JobPost, JobResponse, Scraper, SearchRequest, Site
 from jobstreaming.registry import AdapterRegistry
 from jobstreaming.result import normalize_job
 from jobstreaming.util import stable_job_key
@@ -74,6 +74,18 @@ class _AdapterMessage:
     retry_after: float | None = None
     reset_checkpoint: bool = False
     emitted_count: int = 0
+
+
+@dataclass(slots=True)
+class _ManagedAdapter:
+    token: int
+    site: Site
+    scraper: object
+    admitted: bool
+    released: bool = False
+    operation_started: bool = False
+    operation_complete: bool = False
+    cleanup_complete: bool = False
 
 
 MessageSink = Callable[[_AdapterMessage], bool]
@@ -156,6 +168,7 @@ class _CancellationController:
         self._cancel_callback = cancel_callback
         self._external_cancelled = threading.Event()
         self._callback_lock = threading.Lock()
+        self._operation_start_lock = threading.RLock()
 
     @property
     def externally_cancelled(self) -> bool:
@@ -188,7 +201,19 @@ class _CancellationController:
         )
 
     def stop(self) -> None:
-        self._stop_event.set()
+        with self._operation_start_lock:
+            self._stop_event.set()
+
+    def start_unless_cancelled(
+        self,
+        start: Callable[[], _Result],
+    ) -> _Result | None:
+        """Linearize owned operation starts against stream shutdown."""
+
+        with self._operation_start_lock:
+            if self.cancelled or self._stop_event.is_set():
+                return None
+            return start()
 
     def wait(self, seconds: float) -> bool:
         """Return true if cancellation occurs before the timeout."""
@@ -269,7 +294,12 @@ class ScrapeContext:
             return self.should_continue
         return not self._cancellation.wait(seconds) and self.should_continue
 
-    def run_interruptibly(self, operation: Callable[[], _Result]) -> _Result:
+    def run_interruptibly(
+        self,
+        operation: Callable[[], _Result],
+        *,
+        on_started: Callable[[], None] | None = None,
+    ) -> _Result:
         """Run a potentially blocking adapter operation behind cancellation."""
 
         completed: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
@@ -280,10 +310,17 @@ class ScrapeContext:
             except BaseException as exc:
                 completed.put((False, exc))
 
-        self._operation_threads.start(
-            name=f"jobstreaming-network-{self.site.value}",
-            target=invoke,
-        )
+        def start() -> threading.Thread:
+            thread = self._operation_threads.start(
+                name=f"jobstreaming-network-{self.site.value}",
+                target=invoke,
+            )
+            if on_started is not None:
+                on_started()
+            return thread
+
+        if self._cancellation.start_unless_cancelled(start) is None:
+            raise StreamCancelledError("Search stream was cancelled")
         while not self.cancelled:
             try:
                 succeeded, result = completed.get(timeout=0.05)
@@ -418,8 +455,9 @@ class SearchStream(Iterator[SearchEvent]):
         self._cleanup_threads = _ThreadTracker()
         self._lifecycle_lock = threading.Lock()
         self._close_lock = threading.RLock()
-        self._open_adapters: dict[int, tuple[Site, object]] = {}
-        self._managed_adapters: list[tuple[Site, object]] = []
+        self._open_adapters: dict[int, _ManagedAdapter] = {}
+        self._managed_adapters: dict[int, _ManagedAdapter] = {}
+        self._next_adapter_token = 0
         self._cleanup_errors: list[str] = []
         self._active_workers = 0
         self._sequence = 0
@@ -488,43 +526,112 @@ class SearchStream(Iterator[SearchEvent]):
                 target=partial(self._run_adapter, site),
             )
 
-    def _register_adapter(self, site: Site, scraper: object) -> bool:
+    def _register_adapter(self, site: Site, scraper: object) -> _ManagedAdapter:
         with self._lifecycle_lock:
-            self._managed_adapters.append((site, scraper))
-            if self._closed:
-                should_close = True
-            else:
-                should_close = False
-                self._open_adapters[id(scraper)] = (site, scraper)
-        if should_close:
-            self._schedule_adapter_close(site, scraper)
-            return False
-        return True
+            self._next_adapter_token += 1
+            registration = _ManagedAdapter(
+                token=self._next_adapter_token,
+                site=site,
+                scraper=scraper,
+                admitted=not self._closed,
+            )
+            self._managed_adapters[registration.token] = registration
+            if registration.admitted:
+                self._open_adapters[id(scraper)] = registration
+        if not registration.admitted:
+            self._schedule_adapter_close(registration)
+        return registration
 
-    def _release_adapter(self, scraper: object) -> None:
+    def _release_adapter(self, registration: _ManagedAdapter) -> None:
+        schedule_cleanup = False
         with self._lifecycle_lock:
-            owned = self._open_adapters.pop(id(scraper), None)
-        if owned is not None:
-            self._schedule_adapter_close(*owned)
+            registration.released = True
+            scraper_id = id(registration.scraper)
+            if self._open_adapters.get(scraper_id) is registration:
+                self._open_adapters.pop(scraper_id)
+                schedule_cleanup = True
+        if schedule_cleanup:
+            self._schedule_adapter_close(registration)
+        self._retire_adapter_registration(registration)
 
-    def _schedule_adapter_close(self, site: Site, scraper: object) -> None:
+    def _complete_adapter_operation(self, registration: _ManagedAdapter) -> None:
+        with self._lifecycle_lock:
+            registration.operation_complete = True
+        self._retire_adapter_registration(registration)
+
+    def _mark_adapter_operation_started(
+        self,
+        registration: _ManagedAdapter,
+    ) -> None:
+        with self._lifecycle_lock:
+            registration.operation_started = True
+
+    def _retire_adapter_registration(
+        self,
+        registration: _ManagedAdapter,
+    ) -> None:
+        with self._lifecycle_lock:
+            ready = (
+                registration.released
+                and registration.operation_complete
+                and registration.cleanup_complete
+            )
+        if not ready:
+            return
+        self._capture_transport_cleanup_errors(registration)
+        with self._lifecycle_lock:
+            if (
+                registration.released
+                and registration.operation_complete
+                and registration.cleanup_complete
+            ):
+                self._managed_adapters.pop(registration.token, None)
+
+    def _capture_transport_cleanup_errors(
+        self,
+        registration: _ManagedAdapter,
+    ) -> None:
+        for error in getattr(
+            registration.scraper,
+            "transport_cleanup_errors",
+            (),
+        ):
+            message = f"{registration.site.value}: transport cleanup: {error}"
+            with self._lifecycle_lock:
+                self._cleanup_errors.append(message)
+
+    def _schedule_adapter_close(self, registration: _ManagedAdapter) -> None:
         def close_adapter() -> None:
-            close = getattr(scraper, "close", None)
-            if not callable(close):
-                return
             try:
-                close()
+                close = getattr(registration.scraper, "close", None)
+                if callable(close):
+                    close()
             except _TransportCleanupError:
                 pass
             except Exception as exc:
-                message = f"{site.value}: {type(exc).__name__}: {exc}"
+                message = f"{registration.site.value}: " f"{type(exc).__name__}: {exc}"
                 with self._lifecycle_lock:
                     self._cleanup_errors.append(message)
+            finally:
+                self._capture_transport_cleanup_errors(registration)
+                with self._lifecycle_lock:
+                    registration.cleanup_complete = True
+                self._retire_adapter_registration(registration)
 
         self._cleanup_threads.start(
-            name=f"jobstreaming-close-{site.value}",
+            name=f"jobstreaming-close-{registration.site.value}",
             target=close_adapter,
         )
+
+    def _run_managed_adapter_operation(
+        self,
+        registration: _ManagedAdapter,
+        operation: Callable[[], JobResponse],
+    ) -> JobResponse:
+        try:
+            return operation()
+        finally:
+            self._complete_adapter_operation(registration)
 
     def _put_message(self, message: _AdapterMessage) -> bool:
         while not self._cancellation.cancelled:
@@ -551,6 +658,7 @@ class SearchStream(Iterator[SearchEvent]):
                 return
             for attempt in range(self.max_retries + 1):
                 scraper: Scraper | None = None
+                registration: _ManagedAdapter | None = None
                 try:
                     scraper = self.registry.create(
                         site,
@@ -558,7 +666,8 @@ class SearchStream(Iterator[SearchEvent]):
                         ca_cert=self.ca_cert,
                         user_agent=self.user_agent,
                     )
-                    if not self._register_adapter(site, scraper):
+                    registration = self._register_adapter(site, scraper)
+                    if not registration.admitted:
                         return
                     if attempt == 0:
                         self._emit_capability_warnings(scraper, context)
@@ -568,7 +677,18 @@ class SearchStream(Iterator[SearchEvent]):
                         if "context" in parameters
                         else partial(scraper.scrape, self.request)
                     )
-                    response = context.run_interruptibly(operation)
+
+                    response = context.run_interruptibly(
+                        partial(
+                            self._run_managed_adapter_operation,
+                            registration,
+                            operation,
+                        ),
+                        on_started=partial(
+                            self._mark_adapter_operation_started,
+                            registration,
+                        ),
+                    )
                     for job in response.jobs:
                         context.emit_job(job, context.resume_state)
                     if not context.cancelled:
@@ -611,8 +731,10 @@ class SearchStream(Iterator[SearchEvent]):
                     if not context.wait(delay):
                         return
                 finally:
-                    if scraper is not None:
-                        self._release_adapter(scraper)
+                    if registration is not None:
+                        if not registration.operation_started:
+                            self._complete_adapter_operation(registration)
+                        self._release_adapter(registration)
         finally:
             self._put_message(
                 _AdapterMessage(
@@ -678,12 +800,18 @@ class SearchStream(Iterator[SearchEvent]):
             closed = self._closed
             open_adapters = tuple(
                 sorted(
-                    (site for site, _ in self._open_adapters.values()),
+                    (
+                        registration.site
+                        for registration in self._open_adapters.values()
+                    ),
                     key=lambda site: site.value,
                 )
             )
             cleanup_errors = list(self._cleanup_errors)
-            managed_adapters = tuple(self._managed_adapters)
+            managed_adapters = tuple(
+                (registration.site, registration.scraper)
+                for registration in self._managed_adapters.values()
+            )
         for site, scraper in managed_adapters:
             for error in getattr(scraper, "transport_cleanup_errors", ()):
                 cleanup_errors.append(f"{site.value}: transport cleanup: {error}")
@@ -915,8 +1043,8 @@ class SearchStream(Iterator[SearchEvent]):
                 self._open_adapters.clear()
             self._cancellation.stop()
             self._wake_iterator()
-            for site, scraper in adapters:
-                self._schedule_adapter_close(site, scraper)
+            for registration in adapters:
+                self._schedule_adapter_close(registration)
 
     def _wake_iterator(self) -> None:
         while True:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 from collections.abc import Callable
 
 import pytest
@@ -145,6 +147,42 @@ def test_close_wakes_a_blocked_iterator_promptly() -> None:
     assert not consumer.is_alive()
     assert outcome == ["closed"]
     assert elapsed < 0.5
+
+
+def test_close_winning_before_operation_start_never_invokes_adapter() -> None:
+    registration_window = threading.Event()
+    release_registration = threading.Event()
+    scrape_started = threading.Event()
+
+    class RegistrationWindowAdapter(Scraper):
+        @property
+        def capabilities(self) -> AdapterCapabilities:
+            registration_window.set()
+            release_registration.wait(timeout=1)
+            return AdapterCapabilities()
+
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+
+        def scrape(self, request, context=None) -> JobResponse:
+            scrape_started.set()
+            return JobResponse()
+
+    stream = stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=_registry(RegistrationWindowAdapter),
+    )
+    assert registration_window.wait(timeout=1)
+
+    stream.close()
+    release_registration.set()
+    diagnostics = stream.wait_closed(1)
+
+    assert scrape_started.is_set() is False
+    assert diagnostics.operations_started == 0
+    assert diagnostics.cleanup_tasks_started == 1
+    assert diagnostics.quiescent is True
+    assert stream._managed_adapters == {}
 
 
 def test_repeated_close_cannot_later_acknowledge_an_uncommitted_event() -> None:
@@ -557,6 +595,53 @@ def test_repeated_cancellation_does_not_accumulate_managed_threads() -> None:
             )
         )
     ]
+
+
+def test_completed_retry_adapters_are_collectible_without_losing_diagnostics() -> None:
+    attempts = 0
+    adapter_refs: list[weakref.ReferenceType[Scraper]] = []
+
+    class RetryingAdapter(Scraper):
+        def __init__(self, attempt: int, **_: object) -> None:
+            super().__init__(Site.INDEED)
+            self.attempt = attempt
+            self.payload = bytearray(1_000_000)
+
+        def scrape(self, request, context=None) -> JobResponse:
+            raise TransientNetworkError(f"attempt {self.attempt}")
+
+        def close(self) -> None:
+            super().close()
+            if self.attempt in (7, 19):
+                raise RuntimeError(f"close failed {self.attempt}")
+
+    def factory(**kwargs: object) -> RetryingAdapter:
+        nonlocal attempts
+        attempts += 1
+        adapter = RetryingAdapter(attempts, **kwargs)
+        adapter_refs.append(weakref.ref(adapter))
+        return adapter
+
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=_registry(factory),
+        max_retries=24,
+        retry_backoff=0,
+    ) as stream:
+        list(stream)
+        diagnostics = stream.wait_closed(2)
+
+    assert attempts == 25
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_tasks_started == 25
+    assert set(diagnostics.cleanup_errors) == {
+        "indeed: RuntimeError: close failed 7",
+        "indeed: RuntimeError: close failed 19",
+    }
+    assert stream._managed_adapters == {}
+
+    gc.collect()
+    assert all(adapter_ref() is None for adapter_ref in adapter_refs)
 
 
 @pytest.mark.parametrize("timeout", [-1, float("inf"), float("nan"), True])
