@@ -257,6 +257,25 @@ adapter/network operations are observed through the same cancellation boundary.
 an event is set or a callback returns `True` once, that stream remains cancelled and
 cannot later report a healthy completion.
 
+`close()` intentionally returns promptly: it signals every worker, closes registered
+adapter transports, and schedules cleanup without waiting for an uncooperative
+third-party call. When an application must prove that no managed resource remains
+active, follow it with a bounded wait and inspect the immutable diagnostics:
+
+```python
+stream.close()
+diagnostics = stream.wait_closed(timeout=2)
+if not diagnostics.quiescent:
+    print("still stopping:", diagnostics.active_operations)
+if diagnostics.cleanup_errors:
+    print("transport cleanup failed:", diagnostics.cleanup_errors)
+```
+
+`wait_closed()` never cancels work itself and always requires a finite,
+non-negative timeout. `stream.diagnostics` provides the same snapshot without
+waiting. Worker, blocking-operation, and adapter-cleanup threads are daemon threads;
+their names and counts are exposed for shutdown monitoring rather than hidden.
+
 ```python
 from threading import Event
 
@@ -341,6 +360,7 @@ class InternalJobs(Scraper):
 
     def __init__(self, **kwargs):
         super().__init__(Site.INDEED)  # this example replaces the Indeed adapter
+        self.session = self.track_transport(make_internal_session())
 
     def scrape(self, request, context=None):
         for job in fetch_internal_jobs(request):
@@ -363,6 +383,11 @@ Increment `cursor_schema_version` whenever a deployed adapter can no longer inte
 cursor state written by its previous implementation. Legacy adapters that only return
 `JobResponse` are still accepted, but their results cannot be streamed until that
 adapter returns.
+
+Register every closeable client/session with `track_transport()`, including sessions
+created lazily or inside detail-worker threads. The base `Scraper.close()` closes each
+registered transport once; adapters with additional resources can override `close()`
+and call `super().close()`.
 
 The registry can replace any built-in adapter. Adding an entirely new site also
 requires adding that board to the `Site` enum so it participates in validation,

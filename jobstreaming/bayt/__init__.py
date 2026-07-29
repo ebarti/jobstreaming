@@ -53,8 +53,8 @@ class BaytScraper(Scraper):
     ) -> JobResponse:
         self.scraper_input = scraper_input
         context = ScrapeContext.local(self.site, scraper_input, context)
-        self.session = create_session(
-            proxies=self.proxies, ca_cert=self.ca_cert, is_tls=False
+        self.session = self.track_transport(
+            create_session(proxies=self.proxies, ca_cert=self.ca_cert, is_tls=False)
         )
         if self.user_agent:
             self.session.headers.update({"user-agent": self.user_agent})

@@ -147,6 +147,187 @@ def test_close_wakes_a_blocked_iterator_promptly() -> None:
     assert elapsed < 0.5
 
 
+def test_close_is_prompt_and_wait_closed_reports_lingering_resources() -> None:
+    operation_started = threading.Event()
+    close_started = threading.Event()
+    release_operation = threading.Event()
+    release_close = threading.Event()
+
+    class BlockingLifecycleAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+
+        def scrape(self, request, context=None) -> JobResponse:
+            operation_started.set()
+            release_operation.wait(timeout=5)
+            return JobResponse()
+
+        def close(self) -> None:
+            close_started.set()
+            release_close.wait(timeout=5)
+
+    stream = stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=_registry(BlockingLifecycleAdapter),
+    )
+    assert operation_started.wait(timeout=1)
+
+    started = time.monotonic()
+    stream.close()
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5
+    assert close_started.wait(timeout=1)
+
+    diagnostics = stream.wait_closed(0.01)
+    assert diagnostics.closed is True
+    assert diagnostics.cancellation_requested is True
+    assert diagnostics.quiescent is False
+    assert diagnostics.active_operations == ("jobstreaming-network-indeed",)
+    assert diagnostics.active_cleanup_tasks == ("jobstreaming-close-indeed",)
+    assert diagnostics.open_adapters == ()
+    assert all(
+        thread.daemon
+        for thread in threading.enumerate()
+        if thread.name
+        in diagnostics.active_operations + diagnostics.active_cleanup_tasks
+    )
+
+    release_operation.set()
+    release_close.set()
+    diagnostics = stream.wait_closed(1)
+    assert diagnostics.quiescent is True
+    assert diagnostics.workers_started == 1
+    assert diagnostics.operations_started == 1
+    assert diagnostics.cleanup_tasks_started == 1
+
+
+def test_adapter_transports_are_closed_once_after_natural_completion() -> None:
+    close_count = 0
+
+    class Transport:
+        def close(self) -> None:
+            nonlocal close_count
+            close_count += 1
+
+    class TransportAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+            self.track_transport(Transport())
+
+        def scrape(self, request, context=None) -> JobResponse:
+            return JobResponse()
+
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=_registry(TransportAdapter),
+    ) as stream:
+        list(stream)
+        diagnostics = stream.wait_closed(1)
+
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_errors == ()
+    assert close_count == 1
+
+
+def test_adapter_cleanup_failures_are_preserved_in_diagnostics() -> None:
+    class BrokenCloseAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+
+        def scrape(self, request, context=None) -> JobResponse:
+            return JobResponse()
+
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=_registry(BrokenCloseAdapter),
+    ) as stream:
+        list(stream)
+        diagnostics = stream.wait_closed(1)
+
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_errors == ("indeed: RuntimeError: close failed",)
+
+
+def test_transport_created_after_adapter_close_is_closed_immediately() -> None:
+    close_count = 0
+
+    class Transport:
+        def close(self) -> None:
+            nonlocal close_count
+            close_count += 1
+
+    adapter = _TwoJobAdapter()
+    adapter.close()
+    adapter.track_transport(Transport())
+    adapter.close()
+
+    assert close_count == 1
+
+
+def test_repeated_cancellation_does_not_accumulate_managed_threads() -> None:
+    class CooperativeAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def scrape(self, request, context=None) -> JobResponse:
+            self.started.set()
+            self.release.wait(timeout=5)
+            return JobResponse()
+
+        def close(self) -> None:
+            self.release.set()
+
+    adapters: list[CooperativeAdapter] = []
+
+    def factory(**kwargs: object) -> CooperativeAdapter:
+        adapter = CooperativeAdapter(**kwargs)
+        adapters.append(adapter)
+        return adapter
+
+    for _ in range(8):
+        expected_adapter_count = len(adapters) + 1
+        stream = stream_search(
+            SearchRequest(site_type=(Site.INDEED,)),
+            registry=_registry(factory),
+        )
+        deadline = time.monotonic() + 1
+        while len(adapters) < expected_adapter_count and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert len(adapters) == expected_adapter_count
+        assert adapters[-1].started.wait(timeout=1)
+        stream.close()
+        assert stream.wait_closed(1).quiescent is True
+
+    assert not [
+        thread.name
+        for thread in threading.enumerate()
+        if thread.name.startswith(
+            (
+                "jobstreaming-indeed",
+                "jobstreaming-network-indeed",
+                "jobstreaming-close-indeed",
+            )
+        )
+    ]
+
+
+@pytest.mark.parametrize("timeout", [-1, float("inf"), float("nan"), True])
+def test_wait_closed_requires_a_bounded_timeout(timeout) -> None:
+    stream = stream_search(
+        SearchRequest(site_type=(Site.INDEED,), results_wanted=0),
+        registry=_registry(),
+    )
+    stream.close()
+
+    with pytest.raises(ValueError, match="finite, non-negative"):
+        stream.wait_closed(timeout)
+
+
 def test_external_event_interrupts_a_network_wait() -> None:
     operation_started = threading.Event()
     release_operation = threading.Event()

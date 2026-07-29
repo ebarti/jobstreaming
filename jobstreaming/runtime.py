@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import queue
 import threading
 import time
@@ -38,7 +39,7 @@ from jobstreaming.exception import (
     UnacknowledgedEventError,
     classify_exception,
 )
-from jobstreaming.model import JobPost, SearchRequest, Site
+from jobstreaming.model import JobPost, Scraper, SearchRequest, Site
 from jobstreaming.registry import AdapterRegistry
 from jobstreaming.result import normalize_job
 from jobstreaming.util import stable_job_key
@@ -80,6 +81,65 @@ _Result = TypeVar("_Result")
 _WAKE = object()
 
 
+@dataclass(frozen=True, slots=True)
+class StreamDiagnostics:
+    """Immutable snapshot of the stream's resource lifecycle."""
+
+    closed: bool
+    cancellation_requested: bool
+    workers_started: int
+    operations_started: int
+    cleanup_tasks_started: int
+    active_workers: tuple[str, ...]
+    active_operations: tuple[str, ...]
+    active_cleanup_tasks: tuple[str, ...]
+    open_adapters: tuple[Site, ...]
+    cleanup_errors: tuple[str, ...]
+
+    @property
+    def quiescent(self) -> bool:
+        """Whether no adapter or managed background thread remains active."""
+
+        return not (
+            self.active_workers
+            or self.active_operations
+            or self.active_cleanup_tasks
+            or self.open_adapters
+        )
+
+
+class _ThreadTracker:
+    """Own daemon threads and expose bounded, race-safe lifecycle snapshots."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._threads: list[threading.Thread] = []
+
+    def start(self, *, name: str, target: Callable[[], None]) -> threading.Thread:
+        thread = threading.Thread(target=target, name=name, daemon=True)
+        with self._lock:
+            self._threads.append(thread)
+        try:
+            thread.start()
+        except BaseException:
+            with self._lock:
+                self._threads.remove(thread)
+            raise
+        return thread
+
+    @property
+    def started_count(self) -> int:
+        with self._lock:
+            return len(self._threads)
+
+    def active_threads(self) -> tuple[threading.Thread, ...]:
+        with self._lock:
+            return tuple(thread for thread in self._threads if thread.is_alive())
+
+    def active_names(self) -> tuple[str, ...]:
+        return tuple(thread.name for thread in self.active_threads())
+
+
 class _CancellationController:
     """Combines stream close, a caller event, and a caller callback."""
 
@@ -116,6 +176,16 @@ class _CancellationController:
     def cancelled(self) -> bool:
         return self._stop_event.is_set() or self.externally_cancelled
 
+    @property
+    def requested(self) -> bool:
+        """Read cancellation state without invoking a caller callback."""
+
+        return (
+            self._stop_event.is_set()
+            or self._external_cancelled.is_set()
+            or (self._cancel_event is not None and self._cancel_event.is_set())
+        )
+
     def stop(self) -> None:
         self._stop_event.set()
 
@@ -145,6 +215,7 @@ class ScrapeContext:
         cancel_event: threading.Event | None = None,
         cancel_callback: CancellationCallback | None = None,
         cancellation: _CancellationController | None = None,
+        operation_threads: _ThreadTracker | None = None,
     ) -> None:
         self.site = site
         self.request = request
@@ -157,6 +228,7 @@ class ScrapeContext:
         self._state = thaw_state(freeze_state(checkpoint.state)) if checkpoint else {}
         self._seen = set(checkpoint.seen_job_keys) if checkpoint else set()
         self._lock = threading.Lock()
+        self._operation_threads = operation_threads or _ThreadTracker()
 
     @classmethod
     def local(
@@ -207,12 +279,10 @@ class ScrapeContext:
             except BaseException as exc:
                 completed.put((False, exc))
 
-        thread = threading.Thread(
-            target=invoke,
+        self._operation_threads.start(
             name=f"jobstreaming-network-{self.site.value}",
-            daemon=True,
+            target=invoke,
         )
-        thread.start()
         while not self.cancelled:
             try:
                 succeeded, result = completed.get(timeout=0.05)
@@ -342,7 +412,12 @@ class SearchStream(Iterator[SearchEvent]):
             cancel_event=cancel_event,
             cancel_callback=cancel_callback,
         )
-        self._threads: list[threading.Thread] = []
+        self._worker_threads = _ThreadTracker()
+        self._operation_threads = _ThreadTracker()
+        self._cleanup_threads = _ThreadTracker()
+        self._lifecycle_lock = threading.Lock()
+        self._open_adapters: dict[int, tuple[Site, Scraper]] = {}
+        self._cleanup_errors: list[str] = []
         self._active_workers = 0
         self._sequence = 0
         self._total_jobs = 0
@@ -405,14 +480,42 @@ class SearchStream(Iterator[SearchEvent]):
         ]
         self._active_workers = len(pending_sites)
         for site in pending_sites:
-            thread = threading.Thread(
-                target=self._run_adapter,
-                args=(site,),
+            self._worker_threads.start(
                 name=f"jobstreaming-{site.value}",
-                daemon=True,
+                target=partial(self._run_adapter, site),
             )
-            self._threads.append(thread)
-            thread.start()
+
+    def _register_adapter(self, site: Site, scraper: Scraper) -> bool:
+        with self._lifecycle_lock:
+            if self._closed:
+                should_close = True
+            else:
+                should_close = False
+                self._open_adapters[id(scraper)] = (site, scraper)
+        if should_close:
+            self._schedule_adapter_close(site, scraper)
+            return False
+        return True
+
+    def _release_adapter(self, scraper: Scraper) -> None:
+        with self._lifecycle_lock:
+            owned = self._open_adapters.pop(id(scraper), None)
+        if owned is not None:
+            self._schedule_adapter_close(*owned)
+
+    def _schedule_adapter_close(self, site: Site, scraper: Scraper) -> None:
+        def close_adapter() -> None:
+            try:
+                scraper.close()
+            except Exception as exc:
+                message = f"{site.value}: {type(exc).__name__}: {exc}"
+                with self._lifecycle_lock:
+                    self._cleanup_errors.append(message)
+
+        self._cleanup_threads.start(
+            name=f"jobstreaming-close-{site.value}",
+            target=close_adapter,
+        )
 
     def _put_message(self, message: _AdapterMessage) -> bool:
         while not self._cancellation.cancelled:
@@ -431,12 +534,14 @@ class SearchStream(Iterator[SearchEvent]):
             checkpoint=checkpoint,
             sink=self._put_message,
             cancellation=self._cancellation,
+            operation_threads=self._operation_threads,
         )
         try:
             if not context.should_continue:
                 self._emit_site_complete(site, context)
                 return
             for attempt in range(self.max_retries + 1):
+                scraper: Scraper | None = None
                 try:
                     scraper = self.registry.create(
                         site,
@@ -444,6 +549,8 @@ class SearchStream(Iterator[SearchEvent]):
                         ca_cert=self.ca_cert,
                         user_agent=self.user_agent,
                     )
+                    if not self._register_adapter(site, scraper):
+                        return
                     if attempt == 0:
                         self._emit_capability_warnings(scraper, context)
                     parameters = inspect.signature(scraper.scrape).parameters
@@ -494,6 +601,9 @@ class SearchStream(Iterator[SearchEvent]):
                     )
                     if not context.wait(delay):
                         return
+                finally:
+                    if scraper is not None:
+                        self._release_adapter(scraper)
         finally:
             self._put_message(
                 _AdapterMessage(
@@ -550,6 +660,68 @@ class SearchStream(Iterator[SearchEvent]):
     @property
     def checkpoint(self) -> SearchCheckpoint:
         return self._checkpoint.model_copy(deep=True)
+
+    @property
+    def diagnostics(self) -> StreamDiagnostics:
+        """Return a side-effect-free snapshot of owned runtime resources."""
+
+        with self._lifecycle_lock:
+            closed = self._closed
+            open_adapters = tuple(
+                sorted(
+                    (site for site, _ in self._open_adapters.values()),
+                    key=lambda site: site.value,
+                )
+            )
+            cleanup_errors = tuple(self._cleanup_errors)
+        return StreamDiagnostics(
+            closed=closed,
+            cancellation_requested=self._cancellation.requested,
+            workers_started=self._worker_threads.started_count,
+            operations_started=self._operation_threads.started_count,
+            cleanup_tasks_started=self._cleanup_threads.started_count,
+            active_workers=self._worker_threads.active_names(),
+            active_operations=self._operation_threads.active_names(),
+            active_cleanup_tasks=self._cleanup_threads.active_names(),
+            open_adapters=open_adapters,
+            cleanup_errors=cleanup_errors,
+        )
+
+    def wait_closed(self, timeout: float) -> StreamDiagnostics:
+        """Wait at most ``timeout`` seconds for all owned resources to stop.
+
+        This method never initiates cancellation. Call ``close()`` first when
+        stopping an active stream, then inspect the returned diagnostics to learn
+        whether a transport operation outlived the bounded wait.
+        """
+
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout < 0
+        ):
+            raise ValueError("timeout must be a finite, non-negative number")
+
+        deadline = time.monotonic() + timeout
+        current = threading.current_thread()
+        while True:
+            tracked = (
+                self._worker_threads.active_threads()
+                + self._operation_threads.active_threads()
+                + self._cleanup_threads.active_threads()
+            )
+            joinable = tuple(thread for thread in tracked if thread is not current)
+            if not joinable:
+                return self.diagnostics
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.diagnostics
+            for thread in joinable:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self.diagnostics
+                thread.join(remaining)
 
     def __iter__(self) -> SearchStream:
         return self
@@ -716,13 +888,18 @@ class SearchStream(Iterator[SearchEvent]):
         self._last_acknowledged = True
 
     def close(self, *, acknowledge: bool = False) -> None:
-        if self._closed:
-            return
         if acknowledge and self._last_delivered is not None:
             self.ack(self._last_delivered)
-        self._closed = True
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            adapters = tuple(self._open_adapters.values())
+            self._open_adapters.clear()
         self._cancellation.stop()
         self._wake_iterator()
+        for site, scraper in adapters:
+            self._schedule_adapter_close(site, scraper)
 
     def _wake_iterator(self) -> None:
         while True:

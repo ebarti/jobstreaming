@@ -94,11 +94,13 @@ class LinkedIn(Scraper):
             ca_cert=ca_cert,
             user_agent=user_agent,
         )
-        self.session = create_session(
-            proxies=self.proxies,
-            ca_cert=ca_cert,
-            is_tls=False,
-            clear_cookies=True,
+        self.session = self.track_transport(
+            create_session(
+                proxies=self.proxies,
+                ca_cert=ca_cert,
+                is_tls=False,
+                clear_cookies=True,
+            )
         )
         self.session.headers.update(headers)
         if self.user_agent:

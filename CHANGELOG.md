@@ -12,6 +12,7 @@ still change when upstream boards drift.
 - Public security, contribution, support, and adapter-configuration guidance.
 - `Retry-After` metadata on retryable terminal error events.
 - Isolated wheel and source-distribution consumer checks in the release workflow.
+- Bounded `wait_closed()` lifecycle diagnostics and adapter transport ownership.
 
 ### Changed
 

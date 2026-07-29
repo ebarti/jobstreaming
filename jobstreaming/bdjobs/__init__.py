@@ -78,7 +78,7 @@ class BDJobs(Scraper):
         if self.user_agent:
             request_headers["User-Agent"] = self.user_agent
         session.headers.update(request_headers)
-        return session
+        return self.track_transport(session)
 
     def scrape(
         self, scraper_input: ScraperInput, context: ScrapeContext | None = None

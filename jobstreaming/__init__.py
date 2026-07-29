@@ -52,7 +52,7 @@ from jobstreaming.model import (
     Site,
 )
 from jobstreaming.registry import AdapterRegistry, default_registry
-from jobstreaming.runtime import AckMode, ScrapeContext, SearchStream
+from jobstreaming.runtime import AckMode, ScrapeContext, SearchStream, StreamDiagnostics
 
 __all__ = [
     "AdapterCapabilities",
@@ -95,6 +95,7 @@ __all__ = [
     "Site",
     "SiteCompleteEvent",
     "StreamCancelledError",
+    "StreamDiagnostics",
     "TransientNetworkError",
     "UnacknowledgedEventError",
     "WarningEvent",

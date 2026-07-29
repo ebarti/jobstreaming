@@ -85,7 +85,9 @@ class ZipRecruiter(Scraper):
         )
 
         self.scraper_input = None
-        self.session = create_session(proxies=proxies, ca_cert=ca_cert)
+        self.session = self.track_transport(
+            create_session(proxies=proxies, ca_cert=ca_cert)
+        )
         self.authorization = authorization or os.getenv(
             "JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION"
         )
@@ -387,7 +389,9 @@ class ZipRecruiter(Scraper):
     def _get_detail_session(self):
         session = getattr(self._thread_local, "session", None)
         if session is None:
-            session = create_session(proxies=self.proxies, ca_cert=self.ca_cert)
+            session = self.track_transport(
+                create_session(proxies=self.proxies, ca_cert=self.ca_cert)
+            )
             session.headers.update(self._session_headers)
             self._thread_local.session = session
         return session
