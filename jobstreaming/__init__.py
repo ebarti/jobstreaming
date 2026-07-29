@@ -18,6 +18,7 @@ from jobstreaming.checkpoint import (
     MemoryCheckpointStore,
     SqliteCheckpointStore,
 )
+from jobstreaming.collector import collect_jobs
 from jobstreaming.events import (
     AdapterCheckpoint,
     ErrorEvent,
@@ -55,6 +56,14 @@ from jobstreaming.model import (
     ScraperInput,
     SearchRequest,
     Site,
+)
+from jobstreaming.outcome import (
+    SearchFailedError,
+    SearchFailure,
+    SearchOutcome,
+    SearchOutcomeStatus,
+    SiteSearchSummary,
+    SourcedJob,
 )
 from jobstreaming.registry import AdapterRegistry, default_registry
 from jobstreaming.runtime import AckMode, ScrapeContext, SearchStream, StreamDiagnostics
@@ -99,17 +108,24 @@ __all__ = [
     "ScraperInput",
     "SearchCheckpoint",
     "SearchCompleteEvent",
+    "SearchFailedError",
+    "SearchFailure",
+    "SearchOutcome",
+    "SearchOutcomeStatus",
     "SearchRequest",
     "SearchStream",
     "Site",
     "SiteCompleteEvent",
+    "SiteSearchSummary",
     "SqliteCheckpointStore",
+    "SourcedJob",
     "StreamCancelledError",
     "StreamDiagnostics",
     "TransientNetworkError",
     "UnacknowledgedEventError",
     "WarningEvent",
     "build_search_request",
+    "collect_jobs",
     "default_registry",
     "scrape_jobs",
     "stream_jobs",

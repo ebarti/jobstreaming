@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from jobstreaming.checkpoint import CheckpointStore, JsonFileCheckpointStore
+from jobstreaming.collector import collect_jobs
 from jobstreaming.events import ErrorEvent, JobEvent
 from jobstreaming.model import (
     Country,
@@ -17,6 +18,7 @@ from jobstreaming.model import (
     SearchRequest,
     Site,
 )
+from jobstreaming.outcome import SearchFailedError
 from jobstreaming.registry import AdapterRegistry, default_registry
 from jobstreaming.result import jobs_to_dataframe
 from jobstreaming.runtime import AckMode, SearchStream
@@ -205,9 +207,7 @@ def scrape_jobs(
         request_timeout=request_timeout,
         max_pages=max_pages,
     )
-    jobs: list[tuple[Site, JobPost]] = []
-    errors: list[ErrorEvent] = []
-    with stream_search(
+    outcome = collect_jobs(
         request,
         registry=registry,
         checkpoint_store=checkpoint_store,
@@ -221,24 +221,17 @@ def scrape_jobs(
         ack_mode=ack_mode,
         cancel_event=cancel_event,
         cancel_callback=cancel_callback,
-    ) as stream:
-        for event in stream:
-            if isinstance(event, JobEvent):
-                jobs.append((event.site, event.job))
-            elif isinstance(event, ErrorEvent):
-                errors.append(event)
-                create_logger(event.site.value).error(
-                    "[%s] %s: %s",
-                    event.code.value,
-                    event.error_type,
-                    event.message,
-                )
-            stream.ack(event)
-
-    if errors and raise_on_error:
-        first = errors[0]
-        raise RuntimeError(
-            f"{first.site.value} failed [{first.code.value}]: "
-            f"{first.error_type}: {first.message}"
+    )
+    for failure in outcome.failures:
+        create_logger(failure.site.value).error(
+            "[%s] %s: %s",
+            failure.code.value,
+            failure.error_type,
+            failure.message,
         )
-    return jobs_to_dataframe(jobs, request)
+    if raise_on_error and outcome.failures:
+        raise SearchFailedError(outcome)
+    return jobs_to_dataframe(
+        ((sourced.site, sourced.job) for sourced in outcome.jobs),
+        request,
+    )
