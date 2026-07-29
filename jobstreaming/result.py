@@ -2,70 +2,73 @@ from __future__ import annotations
 
 from jobstreaming.model import (
     AdapterIdentifier,
-    Compensation,
-    CompensationInterval,
-    Country,
+    DescriptionSalaryPolicy,
     JobPost,
+    SalaryConfidence,
+    SalaryProvenance,
     SalarySource,
     SearchRequest,
 )
-from jobstreaming.util import extract_salary
-
-_ANNUAL_FACTORS = {
-    CompensationInterval.HOURLY: 2_080,
-    CompensationInterval.DAILY: 260,
-    CompensationInterval.WEEKLY: 52,
-    CompensationInterval.MONTHLY: 12,
-    CompensationInterval.YEARLY: 1,
-}
+from jobstreaming.salary import (
+    annualize_compensation,
+    currency_hint_for_country,
+    infer_salary_from_text,
+)
 
 
 def normalize_job(job: JobPost, request: SearchRequest) -> JobPost:
     compensation = job.compensation
     source = job.salary_source
+    provenance = job.salary_provenance
 
     if compensation is not None:
         source = source or SalarySource.DIRECT_DATA
-        if request.enforce_annual_salary:
-            factor = _ANNUAL_FACTORS[compensation.interval]
-            compensation = Compensation(
-                interval=CompensationInterval.YEARLY,
-                min_amount=(
-                    compensation.min_amount * factor
-                    if compensation.min_amount is not None
-                    else None
-                ),
-                max_amount=(
-                    compensation.max_amount * factor
-                    if compensation.max_amount is not None
-                    else None
-                ),
-                currency=compensation.currency,
-            )
-    elif request.country is Country.USA and job.description:
-        interval, minimum, maximum, currency = extract_salary(
-            job.description,
-            enforce_annual_salary=request.enforce_annual_salary,
+        provenance = provenance or SalaryProvenance(
+            source=source,
+            confidence=(
+                SalaryConfidence.HIGH
+                if source is SalarySource.DIRECT_DATA
+                else SalaryConfidence.MEDIUM
+            ),
         )
-        if interval and currency and (minimum is not None or maximum is not None):
-            compensation = Compensation(
-                interval=CompensationInterval(interval),
-                min_amount=minimum,
-                max_amount=maximum,
-                currency=currency,
+        if request.enforce_annual_salary:
+            compensation = annualize_compensation(compensation)
+    elif (
+        request.description_salary_policy is DescriptionSalaryPolicy.CONSERVATIVE
+        and job.description
+    ):
+        inference = infer_salary_from_text(
+            job.description,
+            currency_hint=currency_hint_for_country(request.country),
+        )
+        if inference is not None:
+            compensation = (
+                annualize_compensation(inference.compensation)
+                if request.enforce_annual_salary
+                else inference.compensation
             )
             source = SalarySource.DESCRIPTION
+            provenance = inference.provenance
 
-    if compensation is job.compensation and source is job.salary_source:
+    if (
+        compensation is job.compensation
+        and source is job.salary_source
+        and provenance is job.salary_provenance
+    ):
         return job
     return job.model_copy(
-        update={"compensation": compensation, "salary_source": source}
+        update={
+            "compensation": compensation,
+            "salary_source": source,
+            "salary_provenance": provenance,
+        }
     )
 
 
 def job_to_row(site: AdapterIdentifier, job: JobPost) -> dict[str, object]:
     data = job.model_dump(mode="python")
     compensation = data.pop("compensation", None)
+    provenance = data.pop("salary_provenance", None)
     data["site"] = site.value
     data["company"] = data.pop("company_name")
     location = job.location
@@ -78,6 +81,8 @@ def job_to_row(site: AdapterIdentifier, job: JobPost) -> dict[str, object]:
     data["emails"] = ", ".join(job.emails) if job.emails else None
     data["skills"] = ", ".join(job.skills) if job.skills else None
     data["salary_source"] = job.salary_source.value if job.salary_source else None
+    data["salary_confidence"] = provenance["confidence"].value if provenance else None
+    data["salary_evidence"] = provenance["evidence"] if provenance else None
     data["interval"] = compensation["interval"].value if compensation else None
     data["min_amount"] = compensation["min_amount"] if compensation else None
     data["max_amount"] = compensation["max_amount"] if compensation else None

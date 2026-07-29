@@ -13,6 +13,7 @@ from jobstreaming.model import (
     AdapterIdentifierInput,
     Country,
     DescriptionFormat,
+    DescriptionSalaryPolicy,
     JobPost,
     JobType,
     SearchRequest,
@@ -79,6 +80,9 @@ def build_search_request(
     offset: int = 0,
     hours_old: int | None = None,
     enforce_annual_salary: bool = False,
+    description_salary_policy: (
+        str | DescriptionSalaryPolicy
+    ) = DescriptionSalaryPolicy.OFF,
     request_timeout: float = 30,
     max_pages: int = 50,
 ) -> SearchRequest:
@@ -94,6 +98,11 @@ def build_search_request(
         DescriptionFormat(description_format)
         if isinstance(description_format, str)
         else description_format
+    )
+    parsed_description_salary_policy = (
+        DescriptionSalaryPolicy(description_salary_policy)
+        if isinstance(description_salary_policy, str)
+        else description_salary_policy
     )
     return SearchRequest(
         site_type=_parse_sites(site_name),
@@ -114,6 +123,7 @@ def build_search_request(
         offset=offset,
         hours_old=hours_old,
         enforce_annual_salary=enforce_annual_salary,
+        description_salary_policy=parsed_description_salary_policy,
         request_timeout=request_timeout,
         max_pages=max_pages,
     )
@@ -205,6 +215,9 @@ def scrape_jobs(
     verbose: int = 0,
     user_agent: str | None = None,
     *,
+    description_salary_policy: (
+        str | DescriptionSalaryPolicy
+    ) = DescriptionSalaryPolicy.OFF,
     request_timeout: float = 30,
     max_pages: int = 50,
     checkpoint_store: CheckpointStore | None = None,
@@ -237,6 +250,7 @@ def scrape_jobs(
         offset=offset,
         hours_old=hours_old,
         enforce_annual_salary=enforce_annual_salary,
+        description_salary_policy=description_salary_policy,
         request_timeout=request_timeout,
         max_pages=max_pages,
     )

@@ -98,6 +98,7 @@ files = [
     "jobstreaming/batch.py",
     "jobstreaming/exception.py",
     "jobstreaming/result.py",
+    "jobstreaming/salary.py",
     "tests/typing/adapter_sdk_contract.py",
 ]
 ignore_missing_imports = true

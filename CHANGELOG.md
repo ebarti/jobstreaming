@@ -18,6 +18,8 @@ still change when upstream boards drift.
   static type-check gate for the SDK/core runtime surface.
 - A `batch` extra and typed `MissingOptionalDependencyError` for the optional
   DataFrame compatibility API.
+- Explicit conservative description-salary inference with multilingual interval and
+  currency parsing plus typed provenance and confidence metadata.
 
 ### Changed
 
@@ -36,6 +38,11 @@ still change when upstream boards drift.
   isolated behind a deprecated registration bridge.
 - Pandas is no longer installed or imported by the default streaming package;
   `jobstreaming[batch]` preserves the existing `scrape_jobs` DataFrame behavior.
+- Description salary extraction is now off by default instead of implicitly applying
+  a USD numeric-threshold heuristic; opt in with
+  `description_salary_policy="conservative"`.
+- Structured board compensation always takes precedence over description inference,
+  and batch rows expose flattened salary provenance fields.
 
 ### Fixed
 

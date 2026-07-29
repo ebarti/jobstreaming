@@ -254,7 +254,13 @@ class Compensation(FrozenModel):
     @classmethod
     def normalize_currency(cls, value: str) -> str:
         normalized = value.strip().upper()
-        symbols = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR"}
+        symbols = {
+            "$": "USD",
+            "€": "EUR",
+            "£": "GBP",
+            "₹": "INR",
+            "৳": "BDT",
+        }
         normalized = symbols.get(normalized, normalized)
         if len(normalized) != 3 or not normalized.isalpha():
             raise ValueError("currency must be a three-letter ISO code")
@@ -279,10 +285,36 @@ class DescriptionFormat(str, Enum):
     PLAIN = "plain"
 
 
+class DescriptionSalaryPolicy(str, Enum):
+    OFF = "off"
+    CONSERVATIVE = "conservative"
+
+
 class SalarySource(str, Enum):
     DIRECT_DATA = "direct_data"
     ESTIMATED = "estimated"
     DESCRIPTION = "description"
+
+
+class SalaryConfidence(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+
+
+class SalaryProvenance(FrozenModel):
+    source: SalarySource
+    confidence: SalaryConfidence
+    evidence: str | None = Field(default=None, max_length=160)
+
+    @field_validator("evidence")
+    @classmethod
+    def normalize_evidence(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("salary evidence cannot be empty")
+        return normalized
 
 
 class JobPost(FrozenModel):
@@ -298,6 +330,7 @@ class JobPost(FrozenModel):
     job_type: tuple[JobType, ...] | None = None
     compensation: Compensation | None = None
     salary_source: SalarySource | None = None
+    salary_provenance: SalaryProvenance | None = None
     date_posted: date | None = None
     emails: tuple[str, ...] | None = None
     is_remote: bool | None = None
@@ -332,6 +365,19 @@ class JobPost(FrozenModel):
         if not value.startswith(("http://", "https://")):
             raise ValueError("job_url must be an HTTP(S) URL")
         return value
+
+    @model_validator(mode="after")
+    def validate_salary_provenance(self) -> JobPost:
+        if self.compensation is None and (
+            self.salary_source is not None or self.salary_provenance is not None
+        ):
+            raise ValueError("salary metadata requires compensation")
+        if self.salary_provenance is not None:
+            if self.salary_source is None:
+                raise ValueError("salary provenance requires salary_source")
+            if self.salary_provenance.source is not self.salary_source:
+                raise ValueError("salary provenance source must match salary_source")
+        return self
 
     @field_validator("emails")
     @classmethod
@@ -465,6 +511,7 @@ class SearchRequest(FrozenModel):
     hours_old: int | None = Field(default=None, ge=0)
     max_pages: int = Field(default=50, ge=1, le=1_000)
     enforce_annual_salary: bool = False
+    description_salary_policy: DescriptionSalaryPolicy = DescriptionSalaryPolicy.OFF
 
     @field_validator("site_type", mode="before")
     @classmethod
