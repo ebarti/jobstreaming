@@ -183,18 +183,20 @@ Checkpointing is opt-in. Pass either `checkpoint_path` or a custom `CheckpointSt
   honored, capped at five minutes. The selected delay is the larger of `Retry-After`
   and exponential `retry_backoff`.
 - The checkpoint is written through an `fsync` plus atomic file replacement.
-- Checkpoints carry an overall schema version, a monotonically increasing revision, and
-  a cursor-state schema version for every adapter. An incompatible library or adapter
-  upgrade raises `CheckpointCompatibilityError` before any board worker starts.
+- Checkpoints carry an overall schema version, an opaque generation identity, a
+  monotonically increasing revision within that generation, and a cursor-state schema
+  version for every adapter. An incompatible library or adapter upgrade raises
+  `CheckpointCompatibilityError` before any board worker starts.
 - A checkpoint is bound to the complete request fingerprint. Changing the query,
   filters, sites, or result count raises `CheckpointMismatchError`; use a new path or
   `resume=False` for a new search.
 - Board-owned cursors can expire. If a board rejects an old cursor, the stream emits an
   `ErrorEvent` with `code="cursor_expired"` and `reset_checkpoint=True`; restart that
   site from a fresh checkpoint.
-- Custom stores can provide compare-and-swap ownership using `checkpoint.revision`.
-  Raise `CheckpointConflictError` for a stale save; the conflict is surfaced to the
-  caller immediately and the stream stops without advancing its local checkpoint.
+- Custom stores can provide compare-and-swap ownership using both
+  `checkpoint.generation` and `checkpoint.revision`. Raise
+  `CheckpointConflictError` for a stale save; the conflict is surfaced to the caller
+  immediately and the stream stops without advancing its local checkpoint.
 
 For long-running or high-volume searches, use the stdlib-only SQLite store:
 
@@ -220,7 +222,12 @@ compare-and-swap rejects concurrent stale owners, and each job acknowledgement a
 one key instead of serializing or rewriting all historical keys. `load()` reconstructs
 the complete public `SearchCheckpoint` only when starting/resuming a stream or when
 checkpoint introspection is requested. Call `store.clear()` or use `resume=False` to
-replace the file with a new search.
+replace the file with a new search. A cleared and reseeded checkpoint receives a new
+generation, so an owner from before the clear cannot pass compare-and-swap even when
+the new search has the same request fingerprint and restarts at revision zero.
+Serialized checkpoints and supported SQLite schema-version-1 databases created before
+this field existed load under a stable legacy generation; SQLite adds the missing
+column only after its future-schema compatibility preflight succeeds.
 
 Built-in stores implement `AtomicCheckpointStore`, so `resume=False` replaces an
 existing search checkpoint in one all-or-nothing transition. Custom stores that only

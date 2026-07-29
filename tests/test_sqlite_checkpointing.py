@@ -102,6 +102,7 @@ def test_sqlite_store_round_trips_and_clears_a_full_checkpoint(tmp_path) -> None
 
     reopened = SqliteCheckpointStore(path)
     assert reopened.load() == updated
+    assert reopened.load().generation == initial.generation
     assert reopened.stats().revision == 1
     assert reopened.stats().adapter_count == 1
     assert reopened.stats().seen_job_key_count == 2
@@ -194,6 +195,9 @@ def test_future_sqlite_schema_is_rejected_without_adding_current_tables(
                 version INTEGER NOT NULL
             );
             INSERT INTO jobstreaming_checkpoint_schema VALUES (1, 2);
+            CREATE TABLE jobstreaming_search_checkpoint (
+                singleton INTEGER PRIMARY KEY
+            );
             CREATE TABLE future_only (value TEXT);
             """)
         before = tuple(row[0] for row in connection.execute("""
@@ -202,6 +206,13 @@ def test_future_sqlite_schema_is_rejected_without_adding_current_tables(
                 WHERE type = 'table'
                 ORDER BY name
                 """))
+        before_columns = tuple(
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(jobstreaming_search_checkpoint)"
+            )
+        )
+        before_journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
 
     with pytest.raises(CheckpointCompatibilityError):
         SqliteCheckpointStore(path)
@@ -213,7 +224,78 @@ def test_future_sqlite_schema_is_rejected_without_adding_current_tables(
                 WHERE type = 'table'
                 ORDER BY name
                 """))
+        after_columns = tuple(
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(jobstreaming_search_checkpoint)"
+            )
+        )
+        after_journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
     assert after == before
+    assert after_columns == before_columns
+    assert after_journal_mode == before_journal_mode
+
+
+def test_supported_v1_sqlite_schema_migrates_legacy_generation(tmp_path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    request = SearchRequest(site_type=(Site.INDEED,), search_term="python")
+    legacy_payload = SearchCheckpoint.for_request(request).model_dump(mode="json")
+    legacy_payload.pop("generation")
+    legacy_payload["adapters"] = {}
+    legacy = SearchCheckpoint.model_validate(legacy_payload)
+    with sqlite3.connect(path) as connection:
+        connection.executescript("""
+            CREATE TABLE jobstreaming_checkpoint_schema (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                version INTEGER NOT NULL CHECK (version >= 1)
+            );
+            INSERT INTO jobstreaming_checkpoint_schema VALUES (1, 1);
+
+            CREATE TABLE jobstreaming_search_checkpoint (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                version INTEGER NOT NULL CHECK (version >= 1),
+                revision INTEGER NOT NULL CHECK (revision >= 0),
+                request_fingerprint TEXT NOT NULL,
+                completed INTEGER NOT NULL CHECK (completed IN (0, 1)),
+                updated_at TEXT NOT NULL
+            );
+            """)
+        connection.execute(
+            """
+            INSERT INTO jobstreaming_search_checkpoint (
+                singleton,
+                version,
+                revision,
+                request_fingerprint,
+                completed,
+                updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?)
+            """,
+            (
+                legacy.version,
+                legacy.revision,
+                legacy.request_fingerprint,
+                int(legacy.completed),
+                legacy.updated_at.isoformat(),
+            ),
+        )
+
+    store = SqliteCheckpointStore(path)
+    migrated = store.load()
+
+    assert migrated == legacy
+    with sqlite3.connect(path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(jobstreaming_search_checkpoint)"
+            )
+        }
+    assert "generation" in columns
+
+    advanced = legacy.model_copy(update={"revision": 1})
+    store.save(advanced)
+    assert store.load() == advanced
 
 
 def test_sqlite_incremental_writes_preserve_acknowledgement_order(tmp_path) -> None:
@@ -290,6 +372,24 @@ def test_sqlite_compare_and_swap_allows_only_one_concurrent_owner(
     assert loaded is not None
     assert loaded.revision == 1
     assert len(loaded.adapters[Site.INDEED.value].seen_job_keys) == 1
+
+
+def test_clear_and_same_request_reseed_fence_the_previous_owner(tmp_path) -> None:
+    store = SqliteCheckpointStore(tmp_path / "checkpoint.sqlite3")
+    request = SearchRequest(site_type=(Site.INDEED,))
+    previous_owner = SearchCheckpoint.for_request(request)
+    store.save(previous_owner)
+    stale_write = _write_with_key(previous_owner, "stale-owner")
+
+    store.clear()
+    replacement_owner = SearchCheckpoint.for_request(request)
+    store.save(replacement_owner)
+
+    assert replacement_owner.generation != previous_owner.generation
+    with pytest.raises(CheckpointConflictError):
+        store.save_incremental(stale_write)
+
+    assert store.load() == replacement_owner
 
 
 def test_sqlite_load_uses_one_snapshot_across_all_checkpoint_tables(
@@ -477,6 +577,8 @@ def test_resume_false_transactionally_replaces_existing_sqlite_search(
         checkpoint_store=store,
     ) as stream:
         list(stream)
+    before = store.load()
+    assert before is not None
 
     replacement = SearchRequest(
         site_type=(Site.INDEED,),
@@ -489,10 +591,13 @@ def test_resume_false_transactionally_replaces_existing_sqlite_search(
         checkpoint_store=store,
         resume=False,
     ) as stream:
+        replacement_generation = stream.checkpoint.generation
         list(stream)
 
     loaded = store.load()
     assert loaded is not None
+    assert loaded.generation == replacement_generation
+    assert loaded.generation != before.generation
     assert loaded.request_fingerprint == replacement.fingerprint()
     assert loaded.adapters[Site.INDEED.value].seen_job_keys
 
