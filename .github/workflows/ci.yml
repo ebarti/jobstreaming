@@ -85,7 +85,7 @@ jobs:
           --expected-version "$(poetry version --short)"
           --dist-dir dist
 
-      - name: Verify default and batch wheel consumers
+      - name: Verify SDK, typing, and batch wheel consumers
         shell: bash
         run: |
           wheel=("${GITHUB_WORKSPACE}"/dist/jobstreaming-*.whl)

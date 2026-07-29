@@ -37,14 +37,18 @@ The tag workflow:
    version;
 2. tests the locked project and builds one wheel and one source distribution;
 3. installs each distribution in a clean environment outside the checkout, runs
-   `pip check`, validates installed metadata, and exercises a public API;
-4. records SHA-256 checksums and uploads the release payload as one immutable workflow
+   `pip check`, validates installed metadata, and exercises the public streaming and
+   SDK surfaces;
+4. verifies the default wheel without Pandas, strict consumer typing, and a separate
+   installation of the `batch` extra;
+5. verifies the source distribution's public streaming and SDK surfaces;
+6. records SHA-256 checksums and uploads the release payload as one immutable workflow
    artifact;
-5. generates GitHub-hosted SLSA build provenance in a separate job with narrowly
+7. generates GitHub-hosted SLSA build provenance in a separate job with narrowly
    scoped OIDC and attestation permissions;
-6. publishes through the dedicated `pypi` environment using Trusted Publishing, with
+8. publishes through the dedicated `pypi` environment using Trusted Publishing, with
    PyPI attestations enabled; and
-7. creates the GitHub release only after PyPI publication succeeds.
+9. creates the GitHub release only after PyPI publication succeeds.
 
 The build job has no OIDC permission. The attestation and PyPI jobs receive OIDC only
 after the build artifact has been produced.

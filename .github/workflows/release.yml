@@ -31,7 +31,8 @@ jobs:
         run: |
           poetry install --all-extras --no-interaction
           poetry check --lock
-          poetry run pytest
+          poetry run pytest --cov --cov-report=term-missing
+          poetry run python scripts/check_coverage.py
           poetry run ruff check jobstreaming tests scripts
           poetry run mypy
           poetry run black --check jobstreaming tests scripts
@@ -54,27 +55,36 @@ jobs:
           --expected-version "${GITHUB_REF_NAME#v}"
           --dist-dir dist
 
-      - name: Verify optional dependency metadata
-        run: python scripts/verify_batch_artifact.py dist/jobstreaming-*.whl
-
-      - name: Verify wheel through an isolated consumer install
+      - name: Verify SDK, typing, and batch wheel consumers
         shell: bash
         run: |
-          consumer="${RUNNER_TEMP}/jobstreaming-wheel-consumer"
-          python -m venv "$consumer"
-          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.whl
-          observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
-          test "$observed" = "${GITHUB_REF_NAME#v}"
+          wheel=("${GITHUB_WORKSPACE}"/dist/jobstreaming-*.whl)
+          python scripts/verify_batch_artifact.py "${wheel[0]}"
+
+          streaming_consumer="${RUNNER_TEMP}/jobstreaming-streaming-consumer"
+          python -m venv "$streaming_consumer"
+          "$streaming_consumer/bin/python" -m pip install --disable-pip-version-check mypy==1.15.0 "${wheel[0]}"
+          "$streaming_consumer/bin/python" -m pip check
           cd "$RUNNER_TEMP"
-          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
-          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
+          "$streaming_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
+          "$streaming_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+          "$streaming_consumer/bin/python" -m mypy --strict "${GITHUB_WORKSPACE}/scripts/verify_streaming_typing.py"
+
+          batch_consumer="${RUNNER_TEMP}/jobstreaming-batch-consumer"
+          python -m venv "$batch_consumer"
+          "$batch_consumer/bin/python" -m pip install --disable-pip-version-check "${wheel[0]}[batch]"
+          "$batch_consumer/bin/python" -m pip check
+          cd "$RUNNER_TEMP"
+          "$batch_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_batch_install.py"
 
       - name: Verify source distribution SDK annotations
         shell: bash
         run: |
+          sdist=("${GITHUB_WORKSPACE}"/dist/jobstreaming-*.tar.gz)
           consumer="${RUNNER_TEMP}/jobstreaming-sdist-consumer"
           python -m venv "$consumer"
-          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.tar.gz
+          "$consumer/bin/python" -m pip install --disable-pip-version-check "${sdist[0]}"
+          "$consumer/bin/python" -m pip check
           observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
           test "$observed" = "${GITHUB_REF_NAME#v}"
           cd "$RUNNER_TEMP"

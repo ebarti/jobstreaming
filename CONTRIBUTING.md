@@ -10,7 +10,8 @@ Install Python 3.10 or newer and Poetry 2.4.1, then run:
 ```bash
 poetry install --all-extras
 poetry check --lock
-poetry run pytest
+poetry run pytest --cov
+poetry run python scripts/check_coverage.py
 poetry run ruff check jobstreaming tests scripts
 poetry run mypy
 poetry run black --check jobstreaming tests scripts
