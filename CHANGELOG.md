@@ -17,6 +17,8 @@ still change when upstream boards drift.
 ### Changed
 
 - Cancellation callbacks are latched after their first `True` result.
+- Adapter detail transports are page-scoped, and repeated stream closure cannot
+  retroactively acknowledge an event.
 - Public retry counts are now owned solely by the stream coordinator, with bounded
   `Retry-After` handling.
 - Naukri and Glassdoor `max_pages` limits count fetched pages independently of the

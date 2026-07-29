@@ -275,6 +275,8 @@ if diagnostics.cleanup_errors:
 non-negative timeout. `stream.diagnostics` provides the same snapshot without
 waiting. Worker, blocking-operation, and adapter-cleanup threads are daemon threads;
 their names and counts are exposed for shutdown monitoring rather than hidden.
+Closing is idempotent: once `close(acknowledge=False)` has stopped a stream, a later
+close call cannot retroactively acknowledge its last event.
 
 ```python
 from threading import Event
@@ -387,7 +389,11 @@ adapter returns.
 Register every closeable client/session with `track_transport()`, including sessions
 created lazily or inside detail-worker threads. The base `Scraper.close()` closes each
 registered transport once; adapters with additional resources can override `close()`
-and call `super().close()`.
+and call `super().close()`. Use `transport_scope()` around a bounded page/detail batch
+so its thread-local sessions are released before the next page. A transport registered
+after adapter shutdown is closed and rejected with `RuntimeError`; it is never returned
+to adapter code as a usable client. Transport close failures remain visible in
+`stream.diagnostics.cleanup_errors`, including failures from late registration races.
 
 The registry can replace any built-in adapter. Adding an entirely new site also
 requires adding that board to the `Site` enum so it participates in validation,

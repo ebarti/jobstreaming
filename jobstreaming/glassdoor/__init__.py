@@ -206,9 +206,12 @@ class Glassdoor(Scraper):
             for index, job in enumerate(jobs_data)
             if (page_num - 1) * self.jobs_per_page + index >= scraper_input.offset
         ]
-        with ThreadPoolExecutor(
-            max_workers=min(self.jobs_per_page, max(1, len(candidates)))
-        ) as executor:
+        with (
+            self.transport_scope(),
+            ThreadPoolExecutor(
+                max_workers=min(self.jobs_per_page, max(1, len(candidates)))
+            ) as executor,
+        ):
             future_to_job_data = {
                 executor.submit(self._process_job, job): job for job in candidates
             }

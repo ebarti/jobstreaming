@@ -416,7 +416,9 @@ class SearchStream(Iterator[SearchEvent]):
         self._operation_threads = _ThreadTracker()
         self._cleanup_threads = _ThreadTracker()
         self._lifecycle_lock = threading.Lock()
-        self._open_adapters: dict[int, tuple[Site, Scraper]] = {}
+        self._close_lock = threading.RLock()
+        self._open_adapters: dict[int, tuple[Site, object]] = {}
+        self._managed_adapters: list[tuple[Site, object]] = []
         self._cleanup_errors: list[str] = []
         self._active_workers = 0
         self._sequence = 0
@@ -485,32 +487,39 @@ class SearchStream(Iterator[SearchEvent]):
                 target=partial(self._run_adapter, site),
             )
 
-    def _register_adapter(self, site: Site, scraper: Scraper) -> bool:
+    def _register_adapter(self, site: Site, scraper: object) -> bool:
         with self._lifecycle_lock:
             if self._closed:
                 should_close = True
             else:
                 should_close = False
                 self._open_adapters[id(scraper)] = (site, scraper)
+                self._managed_adapters.append((site, scraper))
         if should_close:
             self._schedule_adapter_close(site, scraper)
             return False
         return True
 
-    def _release_adapter(self, scraper: Scraper) -> None:
+    def _release_adapter(self, scraper: object) -> None:
         with self._lifecycle_lock:
             owned = self._open_adapters.pop(id(scraper), None)
         if owned is not None:
             self._schedule_adapter_close(*owned)
 
-    def _schedule_adapter_close(self, site: Site, scraper: Scraper) -> None:
+    def _schedule_adapter_close(self, site: Site, scraper: object) -> None:
         def close_adapter() -> None:
+            close = getattr(scraper, "close", None)
+            if not callable(close):
+                return
+            errors_before = tuple(getattr(scraper, "transport_cleanup_errors", ()))
             try:
-                scraper.close()
+                close()
             except Exception as exc:
-                message = f"{site.value}: {type(exc).__name__}: {exc}"
-                with self._lifecycle_lock:
-                    self._cleanup_errors.append(message)
+                errors_after = tuple(getattr(scraper, "transport_cleanup_errors", ()))
+                if len(errors_after) == len(errors_before):
+                    message = f"{site.value}: {type(exc).__name__}: {exc}"
+                    with self._lifecycle_lock:
+                        self._cleanup_errors.append(message)
 
         self._cleanup_threads.start(
             name=f"jobstreaming-close-{site.value}",
@@ -673,7 +682,11 @@ class SearchStream(Iterator[SearchEvent]):
                     key=lambda site: site.value,
                 )
             )
-            cleanup_errors = tuple(self._cleanup_errors)
+            cleanup_errors = list(self._cleanup_errors)
+            managed_adapters = tuple(self._managed_adapters)
+        for site, scraper in managed_adapters:
+            for error in getattr(scraper, "transport_cleanup_errors", ()):
+                cleanup_errors.append(f"{site.value}: transport cleanup: {error}")
         return StreamDiagnostics(
             closed=closed,
             cancellation_requested=self._cancellation.requested,
@@ -684,7 +697,7 @@ class SearchStream(Iterator[SearchEvent]):
             active_operations=self._operation_threads.active_names(),
             active_cleanup_tasks=self._cleanup_threads.active_names(),
             open_adapters=open_adapters,
-            cleanup_errors=cleanup_errors,
+            cleanup_errors=tuple(dict.fromkeys(cleanup_errors)),
         )
 
     def wait_closed(self, timeout: float) -> StreamDiagnostics:
@@ -888,18 +901,22 @@ class SearchStream(Iterator[SearchEvent]):
         self._last_acknowledged = True
 
     def close(self, *, acknowledge: bool = False) -> None:
-        if acknowledge and self._last_delivered is not None:
-            self.ack(self._last_delivered)
-        with self._lifecycle_lock:
-            if self._closed:
-                return
-            self._closed = True
-            adapters = tuple(self._open_adapters.values())
-            self._open_adapters.clear()
-        self._cancellation.stop()
-        self._wake_iterator()
-        for site, scraper in adapters:
-            self._schedule_adapter_close(site, scraper)
+        with self._close_lock:
+            with self._lifecycle_lock:
+                if self._closed:
+                    return
+            if acknowledge and self._last_delivered is not None:
+                self.ack(self._last_delivered)
+            with self._lifecycle_lock:
+                if self._closed:
+                    return
+                self._closed = True
+                adapters = tuple(self._open_adapters.values())
+                self._open_adapters.clear()
+            self._cancellation.stop()
+            self._wake_iterator()
+            for site, scraper in adapters:
+                self._schedule_adapter_close(site, scraper)
 
     def _wake_iterator(self) -> None:
         while True:

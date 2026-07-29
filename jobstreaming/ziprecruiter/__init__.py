@@ -220,9 +220,12 @@ class ZipRecruiter(Scraper):
             candidates.append(job)
 
         job_list: list[JobPost] = []
-        with ThreadPoolExecutor(
-            max_workers=min(self.jobs_per_page, max(1, len(candidates)))
-        ) as executor:
+        with (
+            self.transport_scope(),
+            ThreadPoolExecutor(
+                max_workers=min(self.jobs_per_page, max(1, len(candidates)))
+            ) as executor,
+        ):
             futures = {
                 executor.submit(self._process_job, job): job for job in candidates
             }

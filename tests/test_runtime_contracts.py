@@ -147,6 +147,27 @@ def test_close_wakes_a_blocked_iterator_promptly() -> None:
     assert elapsed < 0.5
 
 
+def test_repeated_close_cannot_later_acknowledge_an_uncommitted_event() -> None:
+    store = MemoryCheckpointStore()
+    stream = stream_search(
+        SearchRequest(site_type=(Site.INDEED,), results_wanted=1),
+        registry=_registry(),
+        checkpoint_store=store,
+        ack_mode="explicit",
+    )
+    event = next(stream)
+    assert isinstance(event, JobEvent)
+
+    stream.close(acknowledge=False)
+    stream.close(acknowledge=True)
+    assert stream.wait_closed(1).quiescent is True
+
+    checkpoint = store.load()
+    assert checkpoint is not None
+    assert checkpoint.revision == 0
+    assert checkpoint.adapters[Site.INDEED.value].seen_job_keys == ()
+
+
 def test_close_is_prompt_and_wait_closed_reports_lingering_resources() -> None:
     operation_started = threading.Event()
     close_started = threading.Event()
@@ -251,7 +272,7 @@ def test_adapter_cleanup_failures_are_preserved_in_diagnostics() -> None:
     assert diagnostics.cleanup_errors == ("indeed: RuntimeError: close failed",)
 
 
-def test_transport_created_after_adapter_close_is_closed_immediately() -> None:
+def test_transport_created_after_adapter_close_is_closed_and_rejected() -> None:
     close_count = 0
 
     class Transport:
@@ -261,10 +282,102 @@ def test_transport_created_after_adapter_close_is_closed_immediately() -> None:
 
     adapter = _TwoJobAdapter()
     adapter.close()
-    adapter.track_transport(Transport())
+
+    with pytest.raises(RuntimeError, match="rejected late transport"):
+        adapter.track_transport(Transport())
     adapter.close()
 
     assert close_count == 1
+
+
+def test_late_transport_close_failure_survives_cancellation_diagnostics() -> None:
+    operation_started = threading.Event()
+    adapter_closed = threading.Event()
+    register_late_transport = threading.Event()
+
+    class FailingTransport:
+        def close(self) -> None:
+            raise RuntimeError("late close failed")
+
+    class LateTransportAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+
+        def scrape(self, request, context=None) -> JobResponse:
+            operation_started.set()
+            register_late_transport.wait(timeout=5)
+            self.track_transport(FailingTransport())
+            return JobResponse()
+
+        def close(self) -> None:
+            super().close()
+            adapter_closed.set()
+
+    stream = stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=_registry(LateTransportAdapter),
+    )
+    assert operation_started.wait(timeout=1)
+    stream.close()
+    assert adapter_closed.wait(timeout=1)
+
+    register_late_transport.set()
+    diagnostics = stream.wait_closed(1)
+
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_errors == (
+        "indeed: transport cleanup: RuntimeError: late close failed",
+    )
+
+
+def test_transport_scopes_bound_detail_session_retention() -> None:
+    closed = 0
+    maximum_tracked = 0
+
+    class Transport:
+        def close(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    adapter = _TwoJobAdapter()
+    adapter.track_transport(Transport())
+    for _ in range(100):
+        with adapter.transport_scope():
+            for _ in range(8):
+                adapter.track_transport(Transport())
+                maximum_tracked = max(
+                    maximum_tracked,
+                    adapter.tracked_transport_count,
+                )
+        assert adapter.tracked_transport_count == 1
+
+    adapter.close()
+    assert maximum_tracked == 9
+    assert closed == 801
+
+
+def test_structural_adapter_without_close_hook_remains_compatible() -> None:
+    class StructuralAdapter:
+        capabilities = AdapterCapabilities()
+
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def scrape(self, request, context=None) -> JobResponse:
+            return JobResponse(jobs=(_job(1),))
+
+    registry = AdapterRegistry()
+    registry.register(Site.INDEED, StructuralAdapter)  # type: ignore[arg-type]
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,), results_wanted=1),
+        registry=registry,
+    ) as stream:
+        events = list(stream)
+        diagnostics = stream.wait_closed(1)
+
+    assert any(isinstance(event, JobEvent) for event in events)
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_errors == ()
 
 
 def test_repeated_cancellation_does_not_accumulate_managed_threads() -> None:
