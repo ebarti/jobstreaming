@@ -35,8 +35,8 @@ separate project, distribution, and import identity.
 - Requests and result models are immutable and validated.
 - A typed `collect_jobs(...) -> SearchOutcome` entry point preserves source identity,
   per-site terminal summaries, and chronological failures without building a DataFrame.
-- An optional `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and analysis
-  workflows.
+- An optional `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and
+  analysis workflows.
 - Adapters are registered through an extensible registry rather than a hard-coded
   dispatcher.
 

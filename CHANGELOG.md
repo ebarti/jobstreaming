@@ -71,6 +71,8 @@ still change when upstream boards drift.
   sent as empty parameters.
 - Legacy adapter bridges preserve registration cursor versions and non-resume
   capability declarations, and forward lifecycle cleanup to wrapped adapters.
+- Custom adapter identifiers round-trip through SQLite checkpoints and typed outcome
+  summaries without being narrowed to built-in sites.
 - Resume granularities retain legacy/custom values through a normalized, open value
   object.
 - Adapter factories and instances fail with typed contract errors when identifiers,

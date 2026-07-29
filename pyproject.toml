@@ -84,6 +84,9 @@ skip_covered = true
 
 [tool.mypy]
 python_version = "3.10"
+# Keep the published SDK/core gate focused on the files below while still following
+# built-in adapter imports for type information.
+follow_imports = "silent"
 files = [
     "jobstreaming/__init__.py",
     "jobstreaming/model.py",

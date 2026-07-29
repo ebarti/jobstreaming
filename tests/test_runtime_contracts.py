@@ -33,6 +33,7 @@ from jobstreaming import (
     TransientNetworkError,
     UnacknowledgedEventError,
     WarningEvent,
+    legacy_adapter,
     stream_jobs,
     stream_search,
 )
@@ -558,6 +559,35 @@ def test_structural_adapter_without_close_hook_remains_compatible() -> None:
         diagnostics = stream.wait_closed(1)
 
     assert any(isinstance(event, JobEvent) for event in events)
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_errors == ()
+
+
+def test_legacy_adapter_forwards_close_to_its_wrapped_transport_owner() -> None:
+    close_count = 0
+
+    class LegacyAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+
+        def scrape(self, request) -> JobResponse:
+            return JobResponse(jobs=(_job(1),))
+
+        def close(self) -> None:
+            nonlocal close_count
+            close_count += 1
+
+    registry = AdapterRegistry()
+    registry.register(Site.INDEED, legacy_adapter(LegacyAdapter))
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,), results_wanted=1),
+        registry=registry,
+    ) as stream:
+        events = list(stream)
+        diagnostics = stream.wait_closed(1)
+
+    assert any(isinstance(event, JobEvent) for event in events)
+    assert close_count == 1
     assert diagnostics.quiescent is True
     assert diagnostics.cleanup_errors == ()
 
