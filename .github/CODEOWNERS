@@ -1,0 +1,7 @@
+# Default ownership keeps every change visible to the project maintainer.
+* @ebarti
+
+# Treat automation and disclosure policy changes as security-sensitive.
+/.github/workflows/ @ebarti
+/.github/dependabot.yml @ebarti
+/SECURITY.md @ebarti

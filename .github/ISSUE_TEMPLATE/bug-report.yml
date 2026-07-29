@@ -1,0 +1,85 @@
+name: Bug report
+description: Report a reproducible, non-sensitive JobStreaming defect.
+title: "[bug]: "
+labels: []
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Use the adapter-drift form
+        when a single job board appears to have changed. Report suspected
+        vulnerabilities privately through the repository security policy.
+
+  - type: input
+    id: jobstreaming_version
+    attributes:
+      label: JobStreaming version
+      placeholder: "0.0.3"
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version and operating system
+      placeholder: "Python 3.14 on Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Affected interface
+      options:
+        - stream_search
+        - stream_jobs
+        - collect_jobs
+        - scrape_jobs
+        - CheckpointStore or resume behavior
+        - AdapterRegistry or custom adapter
+        - Packaging or installation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include the exception type or typed error code where available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Keep the example offline when possible and replace sensitive values with obvious placeholders.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional sanitized context
+      description: Add only the smallest logs or checkpoint excerpt needed to understand the issue.
+
+  - type: checkboxes
+    id: public_safety
+    attributes:
+      label: Public-safety confirmation
+      options:
+        - label: I removed credentials, cookies, authorization headers, personal data, and sensitive board-response content.
+          required: true
+        - label: I checked that this report does not belong in the private vulnerability-reporting channel.
+          required: true

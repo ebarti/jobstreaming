@@ -15,12 +15,14 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
-          cache: pip
 
       - name: Install Poetry
         run: python -m pip install poetry==2.4.1
@@ -29,54 +31,97 @@ jobs:
         run: |
           poetry install --all-extras --no-interaction
           poetry check --lock
-          poetry run pytest
+          poetry run pytest --cov --cov-report=term-missing
+          poetry run python scripts/check_coverage.py
           poetry run ruff check jobstreaming tests scripts
           poetry run mypy
           poetry run black --check jobstreaming tests scripts
 
+      - name: Verify release commit belongs to main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" "origin/main"
+
       - name: Verify tag matches package version
-        run: test "${GITHUB_REF_NAME#v}" = "$(poetry version --short)"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test "$version" = "$(poetry version --short)"
+          grep -F "## [$version]" CHANGELOG.md
 
       - name: Build distributions
         run: poetry build
 
-      - name: Verify optional dependency metadata
-        run: python scripts/verify_batch_artifact.py dist/jobstreaming-*.whl
+      - name: Verify installed wheel and source distribution
+        run: >-
+          python scripts/verify_release_artifacts.py
+          --expected-version "${GITHUB_REF_NAME#v}"
+          --dist-dir dist
 
-      - name: Verify wheel through an isolated consumer install
+      - name: Verify SDK, typing, and batch wheel consumers
         shell: bash
         run: |
-          consumer="${RUNNER_TEMP}/jobstreaming-wheel-consumer"
-          python -m venv "$consumer"
-          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.whl
-          observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
-          test "$observed" = "${GITHUB_REF_NAME#v}"
-          cd "$RUNNER_TEMP"
-          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
-          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
+          wheel=("${GITHUB_WORKSPACE}"/dist/jobstreaming-*.whl)
+          python scripts/verify_batch_artifact.py "${wheel[0]}"
 
-      - name: Verify source distribution through an isolated consumer install
+          streaming_consumer="${RUNNER_TEMP}/jobstreaming-streaming-consumer"
+          python -m venv "$streaming_consumer"
+          "$streaming_consumer/bin/python" -m pip install --disable-pip-version-check mypy==1.15.0 "${wheel[0]}"
+          cd "$RUNNER_TEMP"
+          "$streaming_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
+          "$streaming_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+          "$streaming_consumer/bin/python" -m mypy --strict "${GITHUB_WORKSPACE}/scripts/verify_streaming_typing.py"
+
+          batch_consumer="${RUNNER_TEMP}/jobstreaming-batch-consumer"
+          python -m venv "$batch_consumer"
+          "$batch_consumer/bin/python" -m pip install --disable-pip-version-check "${wheel[0]}[batch]"
+          cd "$RUNNER_TEMP"
+          "$batch_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_batch_install.py"
+
+      - name: Assemble release payload
         shell: bash
         run: |
-          consumer="${RUNNER_TEMP}/jobstreaming-sdist-consumer"
-          python -m venv "$consumer"
-          "$consumer/bin/python" -m pip install --disable-pip-version-check dist/jobstreaming-*.tar.gz
-          observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
-          test "$observed" = "${GITHUB_REF_NAME#v}"
-          cd "$RUNNER_TEMP"
-          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
-          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
+          mkdir -p release-artifacts/distributions
+          cp dist/jobstreaming-*.whl dist/jobstreaming-*.tar.gz \
+            release-artifacts/distributions/
+          (
+            cd release-artifacts/distributions
+            sha256sum jobstreaming-*.whl jobstreaming-*.tar.gz > ../SHA256SUMS
+          )
 
-      - name: Upload distributions
+      - name: Upload release payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: jobstreaming-${{ github.ref_name }}
-          path: dist/
+          path: release-artifacts/
           if-no-files-found: error
           retention-days: 14
 
-  publish-pypi:
+  attest:
     needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Download release payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: jobstreaming-${{ github.ref_name }}
+          path: release-artifacts/
+
+      - name: Verify distribution checksums
+        working-directory: release-artifacts/distributions
+        run: sha256sum --check ../SHA256SUMS
+
+      - name: Attest release distributions
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            release-artifacts/distributions/*.whl
+            release-artifacts/distributions/*.tar.gz
+
+  publish-pypi:
+    needs: attest
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -85,14 +130,17 @@ jobs:
       id-token: write
 
     steps:
-      - name: Download distributions
+      - name: Download release payload
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: jobstreaming-${{ github.ref_name }}
-          path: dist/
+          path: release-artifacts/
 
       - name: Publish to PyPI with trusted publishing
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        with:
+          packages-dir: release-artifacts/distributions/
+          attestations: true
 
   publish-github:
     needs: publish-pypi
@@ -101,17 +149,23 @@ jobs:
       contents: write
 
     steps:
-      - name: Download distributions
+      - name: Download release payload
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: jobstreaming-${{ github.ref_name }}
-          path: dist/
+          path: release-artifacts/
+
+      - name: Verify distribution checksums
+        working-directory: release-artifacts/distributions
+        run: sha256sum --check ../SHA256SUMS
 
       - name: Publish pinned GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create "$GITHUB_REF_NAME" dist/*
+          gh release create "$GITHUB_REF_NAME"
+          release-artifacts/distributions/*
+          release-artifacts/SHA256SUMS
           --repo "$GITHUB_REPOSITORY"
           --verify-tag
           --generate-notes
