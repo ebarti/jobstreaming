@@ -64,6 +64,7 @@ jobs:
           streaming_consumer="${RUNNER_TEMP}/jobstreaming-streaming-consumer"
           python -m venv "$streaming_consumer"
           "$streaming_consumer/bin/python" -m pip install --disable-pip-version-check mypy==1.15.0 "${wheel[0]}"
+          "$streaming_consumer/bin/python" -m pip check
           cd "$RUNNER_TEMP"
           "$streaming_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
           "$streaming_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
@@ -72,8 +73,23 @@ jobs:
           batch_consumer="${RUNNER_TEMP}/jobstreaming-batch-consumer"
           python -m venv "$batch_consumer"
           "$batch_consumer/bin/python" -m pip install --disable-pip-version-check "${wheel[0]}[batch]"
+          "$batch_consumer/bin/python" -m pip check
           cd "$RUNNER_TEMP"
           "$batch_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_batch_install.py"
+
+      - name: Verify source distribution SDK annotations
+        shell: bash
+        run: |
+          sdist=("${GITHUB_WORKSPACE}"/dist/jobstreaming-*.tar.gz)
+          consumer="${RUNNER_TEMP}/jobstreaming-sdist-consumer"
+          python -m venv "$consumer"
+          "$consumer/bin/python" -m pip install --disable-pip-version-check "${sdist[0]}"
+          "$consumer/bin/python" -m pip check
+          observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
+          test "$observed" = "${GITHUB_REF_NAME#v}"
+          cd "$RUNNER_TEMP"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
 
       - name: Assemble release payload
         shell: bash
