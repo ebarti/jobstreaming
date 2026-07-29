@@ -10,7 +10,7 @@ background workers, workflow engines, and job-market analysis.
 It is a standalone Python package: no companion service or database is required. Some
 board adapters require operator-provided board credentials; the package does not ship
 shared credentials. Use the full event stream for durable ingestion, a job-only
-iterator for simple consumers, or the familiar DataFrame API for batch analysis.
+iterator for simple consumers, or the optional DataFrame API for batch analysis.
 
 JobStreaming is an independently maintained, heavily modified fork of an MIT-licensed
 upstream project. It retains the original license and attribution while using a
@@ -32,8 +32,8 @@ separate project, distribution, and import identity.
 - Adapter failures are isolated. The batch API returns healthy partial results unless
   strict failure mode is requested.
 - Requests and result models are immutable and validated.
-- A `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and analysis
-  workflows.
+- An optional `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and
+  analysis workflows.
 - Adapters are registered through an extensible registry rather than a hard-coded
   dispatcher.
 
@@ -43,7 +43,7 @@ Choose the interface that matches your consumer:
 |---|---|
 | Durable ingestion with progress, errors, and explicit acknowledgement | `stream_search` |
 | A simple iterator of normalized jobs | `stream_jobs` |
-| A Pandas DataFrame for notebooks, exports, or batch analysis | `scrape_jobs` |
+| A Pandas DataFrame for notebooks, exports, or batch analysis | `scrape_jobs` with the `batch` extra |
 | Application-owned checkpoint persistence | `CheckpointStore` |
 | Replacing or extending source behavior | `AdapterRegistry` |
 
@@ -70,6 +70,13 @@ Install the published package from PyPI:
 
 ```bash
 pip install -U jobstreaming
+```
+
+The default installation contains the streaming runtime and does not install or import
+Pandas. Install the optional batch surface when you need DataFrames:
+
+```bash
+pip install -U "jobstreaming[batch]"
 ```
 
 Both the PyPI distribution and Python import package are `jobstreaming`. No legacy
@@ -196,6 +203,8 @@ idempotent using `event.job_key` or the job's stable `id`.
 
 ## Compatible batch API
 
+Install `jobstreaming[batch]` before using this compatibility API:
+
 ```python
 from jobstreaming import scrape_jobs
 
@@ -215,6 +224,9 @@ jobs.to_csv("jobs.csv", index=False)
 `scrape_jobs` consumes the same concurrent event stream and returns a DataFrame. By
 default, a failed site is logged and healthy partial results are returned. Set
 `raise_on_error=True` to raise after all sites have had a chance to finish.
+Calling it from a core-only installation raises
+`MissingOptionalDependencyError` before any adapter or network work begins, with the
+exact extra needed to enable it.
 
 Checkpoints store identities and cursor state, not full job payloads. A resumed batch
 call therefore contains only jobs emitted during that invocation. For a durable full
@@ -407,7 +419,7 @@ implementations and capability declarations.
 ## Development
 
 ```bash
-poetry install
+poetry install --all-extras
 poetry run pytest --cov
 poetry run python scripts/check_coverage.py
 poetry run ruff check jobstreaming tests scripts

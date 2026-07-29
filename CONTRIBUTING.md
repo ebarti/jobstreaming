@@ -8,11 +8,12 @@ small, well-tested changes that preserve public contracts are especially valuabl
 Install Python 3.10 or newer and Poetry 2.4.1, then run:
 
 ```bash
-poetry install
+poetry install --all-extras
 poetry check --lock
 poetry run pytest
-poetry run ruff check jobstreaming scripts tests
-poetry run black --check jobstreaming scripts tests
+poetry run ruff check jobstreaming tests scripts
+poetry run mypy
+poetry run black --check jobstreaming tests scripts
 poetry build
 python scripts/verify_release_artifacts.py \
   --expected-version "$(poetry version --short)" \

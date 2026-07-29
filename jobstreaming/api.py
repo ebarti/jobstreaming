@@ -3,12 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from threading import Event
-from typing import Any
-
-import pandas as pd
+from typing import TYPE_CHECKING, Any
 
 from jobstreaming.checkpoint import CheckpointStore, JsonFileCheckpointStore
 from jobstreaming.events import ErrorEvent, JobEvent
+from jobstreaming.exception import MissingOptionalDependencyError
 from jobstreaming.model import (
     AdapterIdentifier,
     AdapterIdentifierInput,
@@ -21,9 +20,26 @@ from jobstreaming.model import (
     parse_adapter_identifier,
 )
 from jobstreaming.registry import AdapterRegistry, default_registry
-from jobstreaming.result import jobs_to_dataframe
 from jobstreaming.runtime import AckMode, SearchStream
 from jobstreaming.util import create_logger, set_logger_level
+
+if TYPE_CHECKING:
+    from pandas import DataFrame
+else:
+    DataFrame = Any
+
+
+def _load_batch_converter() -> Any:
+    try:
+        from jobstreaming.batch import jobs_to_dataframe
+    except ModuleNotFoundError as exc:
+        if exc.name == "pandas":
+            raise MissingOptionalDependencyError(
+                extra="batch",
+                dependency="pandas",
+            ) from None
+        raise
+    return jobs_to_dataframe
 
 
 def _parse_sites(
@@ -201,7 +217,8 @@ def scrape_jobs(
     ack_mode: str | AckMode = AckMode.IMPLICIT,
     cancel_event: Event | None = None,
     cancel_callback: Callable[[], bool] | None = None,
-) -> pd.DataFrame:
+) -> DataFrame:
+    jobs_to_dataframe = _load_batch_converter()
     set_logger_level(verbose)
     request = build_search_request(
         site_name=site_name,

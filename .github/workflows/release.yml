@@ -29,11 +29,12 @@ jobs:
 
       - name: Install and verify project
         run: |
-          poetry install --no-interaction
+          poetry install --all-extras --no-interaction
           poetry check --lock
           poetry run pytest
-          poetry run ruff check jobstreaming scripts tests
-          poetry run black --check jobstreaming scripts tests
+          poetry run ruff check jobstreaming tests scripts
+          poetry run mypy
+          poetry run black --check jobstreaming tests scripts
 
       - name: Verify release commit belongs to main
         run: git merge-base --is-ancestor "$GITHUB_SHA" "origin/main"
@@ -53,7 +54,10 @@ jobs:
           --expected-version "${GITHUB_REF_NAME#v}"
           --dist-dir dist
 
-      - name: Verify wheel SDK annotations
+      - name: Verify optional dependency metadata
+        run: python scripts/verify_batch_artifact.py dist/jobstreaming-*.whl
+
+      - name: Verify wheel through an isolated consumer install
         shell: bash
         run: |
           consumer="${RUNNER_TEMP}/jobstreaming-wheel-consumer"
@@ -63,6 +67,7 @@ jobs:
           test "$observed" = "${GITHUB_REF_NAME#v}"
           cd "$RUNNER_TEMP"
           "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
 
       - name: Verify source distribution SDK annotations
         shell: bash
@@ -74,6 +79,7 @@ jobs:
           test "$observed" = "${GITHUB_REF_NAME#v}"
           cd "$RUNNER_TEMP"
           "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
 
       - name: Assemble release payload
         shell: bash

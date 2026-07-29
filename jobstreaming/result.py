@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-
-import pandas as pd
-
 from jobstreaming.model import (
     AdapterIdentifier,
     Compensation,
@@ -13,7 +9,7 @@ from jobstreaming.model import (
     SalarySource,
     SearchRequest,
 )
-from jobstreaming.util import desired_order, extract_salary
+from jobstreaming.util import extract_salary
 
 _ANNUAL_FACTORS = {
     CompensationInterval.HOURLY: 2_080,
@@ -87,22 +83,3 @@ def job_to_row(site: AdapterIdentifier, job: JobPost) -> dict[str, object]:
     data["max_amount"] = compensation["max_amount"] if compensation else None
     data["currency"] = compensation["currency"] if compensation else None
     return data
-
-
-def jobs_to_dataframe(
-    jobs: Iterable[tuple[AdapterIdentifier, JobPost]], request: SearchRequest
-) -> pd.DataFrame:
-    rows = [job_to_row(site, normalize_job(job, request)) for site, job in jobs]
-    frame = pd.DataFrame.from_records(rows)
-    for column in desired_order:
-        if column not in frame.columns:
-            frame[column] = None
-    frame = frame[desired_order]
-    if frame.empty:
-        return frame
-    return frame.sort_values(
-        by=["site", "date_posted"],
-        ascending=[True, False],
-        na_position="last",
-        kind="stable",
-    ).reset_index(drop=True)
