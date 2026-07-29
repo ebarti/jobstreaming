@@ -36,8 +36,8 @@ still change when upstream boards drift.
 ### Fixed
 
 - SQLite replacement now rolls back to the previous checkpoint when reseeding fails,
-  rejects future schemas before creating current tables, and closes connections when
-  setup fails.
+  advances the revision to fence stale owners, rejects future schemas before creating
+  current tables, and closes connections when setup fails.
 - ZipRecruiter rounds partial-day age filters up and preserves an explicit zero-mile
   radius.
 - Unsupported Indeed and LinkedIn job-type values are omitted rather than raised or

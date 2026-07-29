@@ -489,7 +489,7 @@ class SearchStream(Iterator[SearchEvent]):
         if not resume:
             checkpoint = SearchCheckpoint.for_request(self.request, cursor_versions)
             if isinstance(self.checkpoint_store, AtomicCheckpointStore):
-                self.checkpoint_store.replace(checkpoint)
+                checkpoint = self.checkpoint_store.replace(checkpoint)
             else:
                 self.checkpoint_store.clear()
                 self.checkpoint_store.save(checkpoint)

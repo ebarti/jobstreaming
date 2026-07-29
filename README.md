@@ -223,7 +223,10 @@ Built-in stores implement `AtomicCheckpointStore`, so `resume=False` replaces an
 existing search checkpoint in one all-or-nothing transition. Custom stores that only
 implement `CheckpointStore` remain compatible and retain the existing `clear()` then
 `save()` reset sequence; implement `AtomicCheckpointStore.replace()` when a custom
-backend must preserve its previous checkpoint if reseeding fails.
+backend must preserve its previous checkpoint if reseeding fails. The method returns
+the checkpoint that was actually persisted, allowing a store to advance its revision
+as part of the replacement. SQLite does so when a prior checkpoint exists, fencing
+stale owners even when the replacement uses the same request fingerprint.
 
 Custom high-volume stores can independently implement `IncrementalCheckpointStore`
 and accept the immutable `CheckpointWrite` command. Ordinary `CheckpointStore`

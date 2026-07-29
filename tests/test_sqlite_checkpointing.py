@@ -497,6 +497,64 @@ def test_resume_false_transactionally_replaces_existing_sqlite_search(
     assert loaded.adapters[Site.INDEED.value].seen_job_keys
 
 
+def test_sqlite_replace_without_existing_row_returns_initial_checkpoint(
+    tmp_path,
+) -> None:
+    store = SqliteCheckpointStore(tmp_path / "checkpoint.sqlite3")
+    checkpoint = SearchCheckpoint.for_request(
+        SearchRequest(site_type=(Site.INDEED,), search_term="python")
+    )
+
+    persisted = store.replace(checkpoint)
+
+    assert persisted == checkpoint
+    assert persisted.revision == 0
+    assert store.load() == persisted
+
+
+def test_resume_false_fences_a_stale_owner_of_the_same_sqlite_search(
+    tmp_path,
+) -> None:
+    store = SqliteCheckpointStore(tmp_path / "checkpoint.sqlite3")
+    request = SearchRequest(site_type=(Site.INDEED,), results_wanted=2)
+    stale_stream = stream_search(
+        request,
+        registry=_registry(),
+        checkpoint_store=store,
+        ack_mode="explicit",
+    )
+    stale_event = next(stale_stream)
+    assert isinstance(stale_event, JobEvent)
+
+    replacement_stream = stream_search(
+        request,
+        registry=_registry(),
+        checkpoint_store=store,
+        resume=False,
+        ack_mode="explicit",
+    )
+    replacement_event = next(replacement_stream)
+    assert isinstance(replacement_event, JobEvent)
+    assert replacement_stream.checkpoint.revision == 1
+
+    with pytest.raises(CheckpointConflictError):
+        stale_stream.ack(stale_event)
+
+    replacement_stream.ack(replacement_event)
+    assert replacement_stream.checkpoint.revision == 2
+    persisted = store.load()
+    assert persisted is not None
+    assert persisted.revision == 2
+    assert persisted.adapters[Site.INDEED.value].seen_job_keys == (
+        replacement_event.job_key,
+    )
+
+    stale_stream.close()
+    replacement_stream.close()
+    assert stale_stream.wait_closed(1).quiescent is True
+    assert replacement_stream.wait_closed(1).quiescent is True
+
+
 def test_resume_false_reseed_failure_preserves_existing_sqlite_search(
     tmp_path,
 ) -> None:
