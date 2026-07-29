@@ -13,7 +13,6 @@ requires-python = ">=3.10,<4.0"
 dependencies = [
     "requests>=2.31.0,<3.0.0",
     "beautifulsoup4>=4.12.2,<5.0.0",
-    "pandas>=2.1.0,<3.0.0",
     "pydantic>=2.3.0,<3.0.0",
     "tls-client>=1.0.1,<2.0.0",
     "markdownify>=1.1.0,<2.0.0",
@@ -39,6 +38,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
+
+[project.optional-dependencies]
+batch = ["pandas>=2.1.0,<3.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/ebarti/jobstreaming"
@@ -73,8 +75,48 @@ select = ["E4", "E7", "E9", "F", "I", "B", "UP", "SIM"]
 addopts = "-ra"
 testpaths = ["tests"]
 
+[tool.coverage.run]
+source = ["jobstreaming"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.mypy]
+python_version = "3.10"
+# Keep the published SDK/core gate focused on the files below while still following
+# built-in adapter imports for type information.
+follow_imports = "silent"
+files = [
+    "jobstreaming/__init__.py",
+    "jobstreaming/model.py",
+    "jobstreaming/protocols.py",
+    "jobstreaming/registry.py",
+    "jobstreaming/events.py",
+    "jobstreaming/checkpoint.py",
+    "jobstreaming/context.py",
+    "jobstreaming/runtime.py",
+    "jobstreaming/testing.py",
+    "jobstreaming/api.py",
+    "jobstreaming/batch.py",
+    "jobstreaming/exception.py",
+    "jobstreaming/result.py",
+    "jobstreaming/salary.py",
+    "tests/typing/adapter_sdk_contract.py",
+]
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_any_generics = true
+no_implicit_optional = true
+strict_equality = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_unused_configs = true
+
 [tool.poetry.group.dev.dependencies]
 black = ">=24.0"
+mypy = ">=1.15"
 pre-commit = ">=3.0"
 pytest = ">=8.0"
+pytest-cov = ">=6.0"
 ruff = ">=0.9"

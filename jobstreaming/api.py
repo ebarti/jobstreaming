@@ -3,42 +3,70 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from threading import Event
-from typing import Any
-
-import pandas as pd
+from typing import TYPE_CHECKING, Any
 
 from jobstreaming.checkpoint import CheckpointStore, JsonFileCheckpointStore
 from jobstreaming.collector import collect_jobs
 from jobstreaming.events import ErrorEvent, JobEvent
+from jobstreaming.exception import MissingOptionalDependencyError
 from jobstreaming.model import (
+    AdapterIdentifier,
+    AdapterIdentifierInput,
     Country,
     DescriptionFormat,
+    DescriptionSalaryPolicy,
     JobPost,
     JobType,
     SearchRequest,
     Site,
+    parse_adapter_identifier,
 )
 from jobstreaming.outcome import SearchFailedError
 from jobstreaming.registry import AdapterRegistry, default_registry
-from jobstreaming.result import jobs_to_dataframe
 from jobstreaming.runtime import AckMode, SearchStream
 from jobstreaming.util import create_logger, set_logger_level
 
+if TYPE_CHECKING:
+    from pandas import DataFrame
+else:
+    DataFrame = Any
+
+
+def _load_batch_converter() -> Any:
+    try:
+        from jobstreaming.batch import jobs_to_dataframe
+    except ModuleNotFoundError as exc:
+        if exc.name == "pandas":
+            raise MissingOptionalDependencyError(
+                extra="batch",
+                dependency="pandas",
+            ) from None
+        raise
+    return jobs_to_dataframe
+
 
 def _parse_sites(
-    site_name: str | Site | list[str | Site] | tuple[str | Site, ...] | None,
-) -> tuple[Site, ...]:
+    site_name: (
+        AdapterIdentifierInput
+        | list[AdapterIdentifierInput]
+        | tuple[AdapterIdentifierInput, ...]
+        | None
+    ),
+) -> tuple[AdapterIdentifier, ...]:
     if site_name is None:
         return tuple(Site)
     raw_sites = site_name if isinstance(site_name, (list, tuple)) else (site_name,)
-    return tuple(
-        Site.from_string(site) if isinstance(site, str) else site for site in raw_sites
-    )
+    return tuple(parse_adapter_identifier(site) for site in raw_sites)
 
 
 def build_search_request(
     *,
-    site_name: str | Site | list[str | Site] | tuple[str | Site, ...] | None = None,
+    site_name: (
+        AdapterIdentifierInput
+        | list[AdapterIdentifierInput]
+        | tuple[AdapterIdentifierInput, ...]
+        | None
+    ) = None,
     search_term: str | None = None,
     google_search_term: str | None = None,
     location: str | None = None,
@@ -54,6 +82,9 @@ def build_search_request(
     offset: int = 0,
     hours_old: int | None = None,
     enforce_annual_salary: bool = False,
+    description_salary_policy: (
+        str | DescriptionSalaryPolicy
+    ) = DescriptionSalaryPolicy.OFF,
     request_timeout: float = 30,
     max_pages: int = 50,
 ) -> SearchRequest:
@@ -65,6 +96,16 @@ def build_search_request(
         if isinstance(country_indeed, str)
         else country_indeed
     )
+    parsed_description_format = (
+        DescriptionFormat(description_format)
+        if isinstance(description_format, str)
+        else description_format
+    )
+    parsed_description_salary_policy = (
+        DescriptionSalaryPolicy(description_salary_policy)
+        if isinstance(description_salary_policy, str)
+        else description_salary_policy
+    )
     return SearchRequest(
         site_type=_parse_sites(site_name),
         country=country,
@@ -75,13 +116,16 @@ def build_search_request(
         is_remote=is_remote,
         job_type=parsed_job_type,
         easy_apply=easy_apply,
-        description_format=description_format,
+        description_format=parsed_description_format,
         linkedin_fetch_description=linkedin_fetch_description,
         results_wanted=results_wanted,
-        linkedin_company_ids=linkedin_company_ids,
+        linkedin_company_ids=(
+            tuple(linkedin_company_ids) if linkedin_company_ids is not None else None
+        ),
         offset=offset,
         hours_old=hours_old,
         enforce_annual_salary=enforce_annual_salary,
+        description_salary_policy=parsed_description_salary_policy,
         request_timeout=request_timeout,
         max_pages=max_pages,
     )
@@ -152,7 +196,7 @@ def stream_jobs(
 
 
 def scrape_jobs(
-    site_name: str | Site | list[str | Site] | None = None,
+    site_name: AdapterIdentifierInput | list[AdapterIdentifierInput] | None = None,
     search_term: str | None = None,
     google_search_term: str | None = None,
     location: str | None = None,
@@ -173,6 +217,9 @@ def scrape_jobs(
     verbose: int = 0,
     user_agent: str | None = None,
     *,
+    description_salary_policy: (
+        str | DescriptionSalaryPolicy
+    ) = DescriptionSalaryPolicy.OFF,
     request_timeout: float = 30,
     max_pages: int = 50,
     checkpoint_store: CheckpointStore | None = None,
@@ -185,7 +232,8 @@ def scrape_jobs(
     ack_mode: str | AckMode = AckMode.IMPLICIT,
     cancel_event: Event | None = None,
     cancel_callback: Callable[[], bool] | None = None,
-) -> pd.DataFrame:
+) -> DataFrame:
+    jobs_to_dataframe = _load_batch_converter()
     set_logger_level(verbose)
     request = build_search_request(
         site_name=site_name,
@@ -204,6 +252,7 @@ def scrape_jobs(
         offset=offset,
         hours_old=hours_old,
         enforce_annual_salary=enforce_annual_salary,
+        description_salary_policy=description_salary_policy,
         request_timeout=request_timeout,
         max_pages=max_pages,
     )

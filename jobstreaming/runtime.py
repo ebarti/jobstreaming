@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import math
 import queue
 import threading
@@ -10,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
-from typing import Any, TypeVar, cast
+from typing import cast
 
 from jobstreaming.checkpoint import (
     AtomicCheckpointStore,
@@ -21,6 +20,14 @@ from jobstreaming.checkpoint import (
     CheckpointWrite,
     IncrementalCheckpointStore,
     MemoryCheckpointStore,
+)
+from jobstreaming.context import (
+    CancellationCallback,
+    ScrapeContext,
+    _AdapterMessage,
+    _CancellationController,
+    _MessageType,
+    _ThreadTracker,
 )
 from jobstreaming.events import (
     CHECKPOINT_VERSION,
@@ -37,25 +44,19 @@ from jobstreaming.events import (
     thaw_state,
 )
 from jobstreaming.exception import (
-    ErrorCode,
     StreamCancelledError,
     UnacknowledgedEventError,
     _TransportCleanupError,
     classify_exception,
 )
-from jobstreaming.model import JobPost, JobResponse, Scraper, SearchRequest, Site
+from jobstreaming.model import (
+    AdapterIdentifier,
+    JobResponse,
+    SearchFilter,
+    SearchRequest,
+)
+from jobstreaming.protocols import Adapter
 from jobstreaming.registry import AdapterRegistry
-from jobstreaming.result import normalize_job
-from jobstreaming.util import stable_job_key
-
-
-class _MessageType(str, Enum):
-    JOB = "job"
-    PROGRESS = "progress"
-    WARNING = "warning"
-    ERROR = "error"
-    SITE_COMPLETE = "site_complete"
-    WORKER_DONE = "worker_done"
 
 
 class AckMode(str, Enum):
@@ -63,26 +64,10 @@ class AckMode(str, Enum):
     EXPLICIT = "explicit"
 
 
-@dataclass(frozen=True, slots=True)
-class _AdapterMessage:
-    type: _MessageType
-    site: Site
-    state: dict[str, Any]
-    job: JobPost | None = None
-    job_key: str | None = None
-    message: str | None = None
-    error_type: str | None = None
-    error_code: ErrorCode = ErrorCode.ADAPTER_FAILURE
-    retryable: bool = False
-    retry_after: float | None = None
-    reset_checkpoint: bool = False
-    emitted_count: int = 0
-
-
 @dataclass(slots=True)
 class _ManagedAdapter:
     token: int
-    site: Site
+    site: AdapterIdentifier
     scraper: object
     admitted: bool
     released: bool = False
@@ -91,9 +76,6 @@ class _ManagedAdapter:
     cleanup_complete: bool = False
 
 
-MessageSink = Callable[[_AdapterMessage], bool]
-CancellationCallback = Callable[[], bool]
-_Result = TypeVar("_Result")
 _WAKE = object()
 
 
@@ -109,7 +91,7 @@ class StreamDiagnostics:
     active_workers: tuple[str, ...]
     active_operations: tuple[str, ...]
     active_cleanup_tasks: tuple[str, ...]
-    open_adapters: tuple[Site, ...]
+    open_adapters: tuple[AdapterIdentifier, ...]
     cleanup_errors: tuple[str, ...]
 
     @property
@@ -122,286 +104,6 @@ class StreamDiagnostics:
             or self.active_cleanup_tasks
             or self.open_adapters
         )
-
-
-class _ThreadTracker:
-    """Own daemon threads and expose bounded, race-safe lifecycle snapshots."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._threads: list[threading.Thread] = []
-
-    def start(self, *, name: str, target: Callable[[], None]) -> threading.Thread:
-        thread = threading.Thread(target=target, name=name, daemon=True)
-        with self._lock:
-            self._threads.append(thread)
-        try:
-            thread.start()
-        except BaseException:
-            with self._lock:
-                self._threads.remove(thread)
-            raise
-        return thread
-
-    @property
-    def started_count(self) -> int:
-        with self._lock:
-            return len(self._threads)
-
-    def active_threads(self) -> tuple[threading.Thread, ...]:
-        with self._lock:
-            return tuple(thread for thread in self._threads if thread.is_alive())
-
-    def active_names(self) -> tuple[str, ...]:
-        return tuple(thread.name for thread in self.active_threads())
-
-
-class _CancellationController:
-    """Combines stream close, a caller event, and a caller callback."""
-
-    def __init__(
-        self,
-        *,
-        stop_event: threading.Event | None = None,
-        cancel_event: threading.Event | None = None,
-        cancel_callback: CancellationCallback | None = None,
-    ) -> None:
-        self._stop_event = stop_event or threading.Event()
-        self._cancel_event = cancel_event
-        self._cancel_callback = cancel_callback
-        self._external_cancelled = threading.Event()
-        self._callback_lock = threading.Lock()
-        self._operation_start_lock = threading.RLock()
-
-    @property
-    def externally_cancelled(self) -> bool:
-        if self._external_cancelled.is_set():
-            return True
-        if self._cancel_event is not None and self._cancel_event.is_set():
-            self._external_cancelled.set()
-            return True
-        if self._cancel_callback is None:
-            return False
-        with self._callback_lock:
-            if self._external_cancelled.is_set():
-                return True
-            if self._cancel_callback():
-                self._external_cancelled.set()
-        return self._external_cancelled.is_set()
-
-    @property
-    def cancelled(self) -> bool:
-        return self._stop_event.is_set() or self.externally_cancelled
-
-    @property
-    def requested(self) -> bool:
-        """Read cancellation state without invoking a caller callback."""
-
-        return (
-            self._stop_event.is_set()
-            or self._external_cancelled.is_set()
-            or (self._cancel_event is not None and self._cancel_event.is_set())
-        )
-
-    def stop(self) -> None:
-        with self._operation_start_lock:
-            self._stop_event.set()
-
-    def start_unless_cancelled(
-        self,
-        start: Callable[[], _Result],
-    ) -> _Result | None:
-        """Linearize owned operation starts against stream shutdown."""
-
-        with self._operation_start_lock:
-            if self.cancelled or self._stop_event.is_set():
-                return None
-            return start()
-
-    def wait(self, seconds: float) -> bool:
-        """Return true if cancellation occurs before the timeout."""
-
-        deadline = time.monotonic() + max(0, seconds)
-        while not self.cancelled:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            self._stop_event.wait(min(remaining, 0.05))
-        return True
-
-
-class ScrapeContext:
-    """Per-adapter execution boundary for emission, deduplication, and resume."""
-
-    def __init__(
-        self,
-        *,
-        site: Site,
-        request: SearchRequest,
-        checkpoint: AdapterCheckpoint | None = None,
-        sink: MessageSink | None = None,
-        stop_event: threading.Event | None = None,
-        cancel_event: threading.Event | None = None,
-        cancel_callback: CancellationCallback | None = None,
-        cancellation: _CancellationController | None = None,
-        operation_threads: _ThreadTracker | None = None,
-    ) -> None:
-        self.site = site
-        self.request = request
-        self._sink = sink
-        self._cancellation = cancellation or _CancellationController(
-            stop_event=stop_event,
-            cancel_event=cancel_event,
-            cancel_callback=cancel_callback,
-        )
-        self._state = thaw_state(freeze_state(checkpoint.state)) if checkpoint else {}
-        self._seen = set(checkpoint.seen_job_keys) if checkpoint else set()
-        self._lock = threading.Lock()
-        self._operation_threads = operation_threads or _ThreadTracker()
-
-    @classmethod
-    def local(
-        cls,
-        site: Site,
-        request: SearchRequest,
-        context: ScrapeContext | None,
-    ) -> ScrapeContext:
-        return context or cls(site=site, request=request)
-
-    @property
-    def resume_state(self) -> dict[str, Any]:
-        with self._lock:
-            return thaw_state(freeze_state(self._state))
-
-    @property
-    def seen_job_keys(self) -> frozenset[str]:
-        with self._lock:
-            return frozenset(self._seen)
-
-    @property
-    def emitted_count(self) -> int:
-        with self._lock:
-            return len(self._seen)
-
-    @property
-    def cancelled(self) -> bool:
-        return self._cancellation.cancelled
-
-    @property
-    def should_continue(self) -> bool:
-        return not self.cancelled and self.emitted_count < self.request.results_wanted
-
-    def wait(self, seconds: float) -> bool:
-        """Wait between requests, waking immediately when the stream is closed."""
-        if seconds <= 0:
-            return self.should_continue
-        return not self._cancellation.wait(seconds) and self.should_continue
-
-    def run_interruptibly(
-        self,
-        operation: Callable[[], _Result],
-        *,
-        on_started: Callable[[], None] | None = None,
-    ) -> _Result:
-        """Run a potentially blocking adapter operation behind cancellation."""
-
-        completed: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
-
-        def invoke() -> None:
-            try:
-                completed.put((True, operation()))
-            except BaseException as exc:
-                completed.put((False, exc))
-
-        def start() -> threading.Thread:
-            thread = self._operation_threads.start(
-                name=f"jobstreaming-network-{self.site.value}",
-                target=invoke,
-            )
-            if on_started is not None:
-                on_started()
-            return thread
-
-        if self._cancellation.start_unless_cancelled(start) is None:
-            raise StreamCancelledError("Search stream was cancelled")
-        while not self.cancelled:
-            try:
-                succeeded, result = completed.get(timeout=0.05)
-            except queue.Empty:
-                continue
-            if succeeded:
-                return cast(_Result, result)
-            raise cast(BaseException, result)
-        raise StreamCancelledError("Search stream was cancelled")
-
-    def already_seen(self, job: JobPost) -> bool:
-        key = stable_job_key(self.site.value, job.id or job.job_url)
-        with self._lock:
-            return key in self._seen
-
-    def emit_job(
-        self, job: JobPost, resume_state: dict[str, Any] | None = None
-    ) -> bool:
-        job = normalize_job(job, self.request)
-        key = stable_job_key(self.site.value, job.id or job.job_url)
-        with self._lock:
-            if (
-                self.cancelled
-                or key in self._seen
-                or len(self._seen) >= self.request.results_wanted
-            ):
-                return False
-            self._seen.add(key)
-            if resume_state is not None:
-                self._state = thaw_state(freeze_state(resume_state))
-            state = thaw_state(freeze_state(self._state))
-
-        if self._sink is None:
-            return True
-        accepted = self._sink(
-            _AdapterMessage(
-                type=_MessageType.JOB,
-                site=self.site,
-                state=state,
-                job=job,
-                job_key=key,
-                emitted_count=self.emitted_count,
-            )
-        )
-        if not accepted:
-            with self._lock:
-                self._seen.discard(key)
-            return False
-        return True
-
-    def emit_progress(
-        self, resume_state: dict[str, Any], message: str | None = None
-    ) -> None:
-        with self._lock:
-            self._state = thaw_state(freeze_state(resume_state))
-            state = thaw_state(freeze_state(self._state))
-        if self._sink is not None and not self.cancelled:
-            self._sink(
-                _AdapterMessage(
-                    type=_MessageType.PROGRESS,
-                    site=self.site,
-                    state=state,
-                    message=message,
-                    emitted_count=self.emitted_count,
-                )
-            )
-
-    def emit_warning(self, message: str) -> None:
-        if self._sink is not None and not self.cancelled:
-            self._sink(
-                _AdapterMessage(
-                    type=_MessageType.WARNING,
-                    site=self.site,
-                    state=self.resume_state,
-                    message=message,
-                    emitted_count=self.emitted_count,
-                )
-            )
 
 
 class SearchStream(Iterator[SearchEvent]):
@@ -518,7 +220,7 @@ class SearchStream(Iterator[SearchEvent]):
                     cursor_schema_version=expected_version,
                 )
                 continue
-            if adapter_checkpoint.site is not site:
+            if adapter_checkpoint.site != site:
                 raise CheckpointCompatibilityError(
                     f"Checkpoint adapter key {site.value!r} contains "
                     f"state for {adapter_checkpoint.site.value!r}"
@@ -545,7 +247,9 @@ class SearchStream(Iterator[SearchEvent]):
                 target=partial(self._run_adapter, site),
             )
 
-    def _register_adapter(self, site: Site, scraper: object) -> _ManagedAdapter:
+    def _register_adapter(
+        self, site: AdapterIdentifier, scraper: object
+    ) -> _ManagedAdapter:
         with self._lifecycle_lock:
             self._next_adapter_token += 1
             registration = _ManagedAdapter(
@@ -661,7 +365,7 @@ class SearchStream(Iterator[SearchEvent]):
                 continue
         return False
 
-    def _run_adapter(self, site: Site) -> None:
+    def _run_adapter(self, site: AdapterIdentifier) -> None:
         checkpoint = self._checkpoint.adapters[site.value]
         context = ScrapeContext(
             site=site,
@@ -676,7 +380,7 @@ class SearchStream(Iterator[SearchEvent]):
                 self._emit_site_complete(site, context)
                 return
             for attempt in range(self.max_retries + 1):
-                scraper: Scraper | None = None
+                scraper: Adapter | None = None
                 registration: _ManagedAdapter | None = None
                 try:
                     scraper = self.registry.create(
@@ -690,11 +394,10 @@ class SearchStream(Iterator[SearchEvent]):
                         return
                     if attempt == 0:
                         self._emit_capability_warnings(scraper, context)
-                    parameters = inspect.signature(scraper.scrape).parameters
-                    operation = (
-                        partial(scraper.scrape, self.request, context=context)
-                        if "context" in parameters
-                        else partial(scraper.scrape, self.request)
+                    operation = partial(
+                        scraper.scrape,
+                        self.request,
+                        context=context,
                     )
 
                     response = context.run_interruptibly(
@@ -766,16 +469,16 @@ class SearchStream(Iterator[SearchEvent]):
 
     def _emit_capability_warnings(self, scraper, context: ScrapeContext) -> None:
         requested_filters = {
-            name
-            for name, enabled in {
-                "location": bool(self.request.location),
-                "distance": self.request.distance != 50,
-                "is_remote": self.request.is_remote,
-                "job_type": self.request.job_type is not None,
-                "easy_apply": bool(self.request.easy_apply),
-                "offset": self.request.offset > 0,
-                "hours_old": self.request.hours_old is not None,
-                "description_format": self.request.description_format.value
+            search_filter
+            for search_filter, enabled in {
+                SearchFilter.LOCATION: bool(self.request.location),
+                SearchFilter.DISTANCE: self.request.distance != 50,
+                SearchFilter.IS_REMOTE: self.request.is_remote,
+                SearchFilter.JOB_TYPE: self.request.job_type is not None,
+                SearchFilter.EASY_APPLY: bool(self.request.easy_apply),
+                SearchFilter.OFFSET: self.request.offset > 0,
+                SearchFilter.HOURS_OLD: self.request.hours_old is not None,
+                SearchFilter.DESCRIPTION_FORMAT: self.request.description_format.value
                 != "markdown",
             }.items()
             if enabled
@@ -783,12 +486,13 @@ class SearchStream(Iterator[SearchEvent]):
         unsupported = requested_filters - scraper.capabilities.filters
         if unsupported:
             context.emit_warning(
-                "Unsupported filters were ignored: " + ", ".join(sorted(unsupported))
+                "Unsupported filters were ignored: "
+                + ", ".join(sorted(item.value for item in unsupported))
             )
         supported_job_types = scraper.capabilities.supported_job_types
         if (
             self.request.job_type is not None
-            and "job_type" in scraper.capabilities.filters
+            and SearchFilter.JOB_TYPE in scraper.capabilities.filters
             and supported_job_types is not None
             and self.request.job_type not in supported_job_types
         ):
@@ -797,7 +501,9 @@ class SearchStream(Iterator[SearchEvent]):
                 f"{self.request.job_type.canonical}"
             )
 
-    def _emit_site_complete(self, site: Site, context: ScrapeContext) -> None:
+    def _emit_site_complete(
+        self, site: AdapterIdentifier, context: ScrapeContext
+    ) -> None:
         self._put_message(
             _AdapterMessage(
                 type=_MessageType.SITE_COMPLETE,
@@ -928,7 +634,7 @@ class SearchStream(Iterator[SearchEvent]):
                     checkpoint.completed
                     for checkpoint in self._checkpoint.adapters.values()
                 )
-                event = SearchCompleteEvent(
+                complete_event = SearchCompleteEvent(
                     sequence=self._sequence,
                     emitted_at=datetime.now(timezone.utc),
                     total_jobs=self._total_jobs,
@@ -936,8 +642,8 @@ class SearchStream(Iterator[SearchEvent]):
                     completed=completed,
                 )
                 self._terminal_delivered = True
-                self._remember(event)
-                return event
+                self._remember(complete_event)
+                return complete_event
 
             try:
                 queued = self._queue.get(timeout=0.05)
@@ -954,9 +660,10 @@ class SearchStream(Iterator[SearchEvent]):
 
             self._sequence += 1
             now = datetime.now(timezone.utc)
+            stream_event: SearchEvent
             if message.type is _MessageType.JOB:
                 assert message.job is not None and message.job_key is not None
-                event: SearchEvent = JobEvent(
+                stream_event = JobEvent(
                     sequence=self._sequence,
                     emitted_at=now,
                     site=message.site,
@@ -966,7 +673,7 @@ class SearchStream(Iterator[SearchEvent]):
                 )
                 self._total_jobs += 1
             elif message.type is _MessageType.PROGRESS:
-                event = ProgressEvent(
+                stream_event = ProgressEvent(
                     sequence=self._sequence,
                     emitted_at=now,
                     site=message.site,
@@ -974,7 +681,7 @@ class SearchStream(Iterator[SearchEvent]):
                     message=message.message,
                 )
             elif message.type is _MessageType.WARNING:
-                event = WarningEvent(
+                stream_event = WarningEvent(
                     sequence=self._sequence,
                     emitted_at=now,
                     site=message.site,
@@ -982,7 +689,7 @@ class SearchStream(Iterator[SearchEvent]):
                     resume_state=freeze_state(message.state),
                 )
             elif message.type is _MessageType.ERROR:
-                event = ErrorEvent(
+                stream_event = ErrorEvent(
                     sequence=self._sequence,
                     emitted_at=now,
                     site=message.site,
@@ -997,15 +704,15 @@ class SearchStream(Iterator[SearchEvent]):
                 )
                 self._total_errors += 1
             else:
-                event = SiteCompleteEvent(
+                stream_event = SiteCompleteEvent(
                     sequence=self._sequence,
                     emitted_at=now,
                     site=message.site,
                     emitted_count=message.emitted_count,
                     resume_state=freeze_state(message.state),
                 )
-            self._remember(event)
-            return event
+            self._remember(stream_event)
+            return stream_event
 
     def _remember(self, event: SearchEvent) -> None:
         self._last_delivered = event
@@ -1026,7 +733,7 @@ class SearchStream(Iterator[SearchEvent]):
             else None
         )
         adapters = dict(self._checkpoint.adapters)
-        adapter_site: Site | None = None
+        adapter_site: AdapterIdentifier | None = None
         new_seen_job_key: str | None = None
         if isinstance(
             event,

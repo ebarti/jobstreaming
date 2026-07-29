@@ -9,7 +9,7 @@ from typing import Any
 
 from jobstreaming.events import ErrorEvent, EventType, freeze_state
 from jobstreaming.exception import ErrorCode
-from jobstreaming.model import JobPost, Site
+from jobstreaming.model import AdapterIdentifier, JobPost
 
 
 class SearchOutcomeStatus(str, Enum):
@@ -24,7 +24,7 @@ class SearchOutcomeStatus(str, Enum):
 class SourcedJob:
     """A normalized job together with the adapter site that emitted it."""
 
-    site: Site
+    site: AdapterIdentifier
     job: JobPost
 
 
@@ -34,7 +34,7 @@ class SearchFailure:
 
     sequence: int
     emitted_at: datetime
-    site: Site
+    site: AdapterIdentifier
     message: str
     error_type: str
     recoverable: bool
@@ -79,7 +79,7 @@ class SearchFailure:
 class SiteSearchSummary:
     """Terminal counters and failures assigned to one requested site."""
 
-    site: Site
+    site: AdapterIdentifier
     jobs_emitted: int
     failures: tuple[SearchFailure, ...]
     completed: bool
@@ -154,14 +154,14 @@ class SearchOutcome:
         return SearchOutcomeStatus.FAILED
 
     @property
-    def succeeded_sites(self) -> tuple[Site, ...]:
+    def succeeded_sites(self) -> tuple[AdapterIdentifier, ...]:
         return tuple(summary.site for summary in self.sites if summary.completed)
 
     @property
-    def failed_sites(self) -> tuple[Site, ...]:
+    def failed_sites(self) -> tuple[AdapterIdentifier, ...]:
         return tuple(summary.site for summary in self.sites if summary.failures)
 
-    def summary_for(self, site: Site) -> SiteSearchSummary:
+    def summary_for(self, site: AdapterIdentifier) -> SiteSearchSummary:
         for summary in self.sites:
             if summary.site == site:
                 return summary

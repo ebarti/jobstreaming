@@ -237,7 +237,9 @@ def test_legacy_batch_adapter_is_still_supported() -> None:
             return JobResponse(jobs=[_job(1)])
 
     request = SearchRequest(site_type=(Site.INDEED,))
-    with stream_search(request, registry=_registry(LegacyAdapter)) as stream:
+    with pytest.warns(DeprecationWarning, match="Implicit legacy adapter"):
+        registry = _registry(LegacyAdapter)
+    with stream_search(request, registry=registry) as stream:
         jobs = [event for event in stream if isinstance(event, JobEvent)]
 
     assert [event.job.id for event in jobs] == ["job-1"]

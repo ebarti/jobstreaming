@@ -5,13 +5,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 from uuid import uuid4
 
 from pydantic import Field
 
 from jobstreaming.exception import ErrorCode
-from jobstreaming.model import FrozenModel, JobPost, SearchRequest, Site
+from jobstreaming.model import (
+    AdapterIdentifier,
+    FrozenModel,
+    JobPost,
+    SearchRequest,
+)
 
 CHECKPOINT_VERSION = 1
 LEGACY_CHECKPOINT_GENERATION = "legacy"
@@ -31,7 +36,7 @@ def freeze_state(state: Mapping[str, Any]) -> Mapping[str, Any]:
             return frozenset(freeze(item) for item in value)
         return value
 
-    return freeze(state)
+    return cast(Mapping[str, Any], freeze(state))
 
 
 def thaw_state(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -46,7 +51,7 @@ def thaw_state(state: Mapping[str, Any]) -> dict[str, Any]:
             return [thaw(item) for item in sorted(value, key=repr)]
         return value
 
-    return thaw(state)
+    return cast(dict[str, Any], thaw(state))
 
 
 class EventType(str, Enum):
@@ -62,7 +67,7 @@ class EventType(str, Enum):
 class JobEvent:
     sequence: int
     emitted_at: datetime
-    site: Site
+    site: AdapterIdentifier
     job: JobPost
     job_key: str
     resume_state: Mapping[str, Any]
@@ -73,7 +78,7 @@ class JobEvent:
 class ProgressEvent:
     sequence: int
     emitted_at: datetime
-    site: Site
+    site: AdapterIdentifier
     resume_state: Mapping[str, Any]
     message: str | None = None
     type: EventType = EventType.PROGRESS
@@ -83,7 +88,7 @@ class ProgressEvent:
 class WarningEvent:
     sequence: int
     emitted_at: datetime
-    site: Site
+    site: AdapterIdentifier
     message: str
     resume_state: Mapping[str, Any]
     type: EventType = EventType.WARNING
@@ -93,7 +98,7 @@ class WarningEvent:
 class ErrorEvent:
     sequence: int
     emitted_at: datetime
-    site: Site
+    site: AdapterIdentifier
     message: str
     error_type: str
     recoverable: bool
@@ -109,7 +114,7 @@ class ErrorEvent:
 class SiteCompleteEvent:
     sequence: int
     emitted_at: datetime
-    site: Site
+    site: AdapterIdentifier
     emitted_count: int
     resume_state: Mapping[str, Any]
     type: EventType = EventType.SITE_COMPLETE
@@ -136,7 +141,7 @@ SearchEvent: TypeAlias = (
 
 
 class AdapterCheckpoint(FrozenModel):
-    site: Site
+    site: AdapterIdentifier
     cursor_schema_version: int = Field(default=1, ge=1)
     state: dict[str, Any] = Field(default_factory=dict)
     seen_job_keys: tuple[str, ...] = ()
@@ -158,7 +163,7 @@ class SearchCheckpoint(FrozenModel):
     def for_request(
         cls,
         request: SearchRequest,
-        cursor_schema_versions: Mapping[Site, int] | None = None,
+        cursor_schema_versions: Mapping[AdapterIdentifier, int] | None = None,
     ) -> SearchCheckpoint:
         versions = cursor_schema_versions or {}
         return cls(

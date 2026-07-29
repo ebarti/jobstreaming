@@ -11,7 +11,8 @@ import tls_client
 from markdownify import markdownify as md
 
 from jobstreaming.exception import AuthenticationConfigurationError
-from jobstreaming.model import CompensationInterval, JobType, Site
+from jobstreaming.model import JobType, Site
+from jobstreaming.salary import annualize_compensation, infer_salary_from_text
 
 _JOBSTREAMING_LOG_LEVEL = logging.INFO
 
@@ -240,71 +241,31 @@ def extract_salary(
     monthly_threshold=30000,
     enforce_annual_salary=False,
 ):
-    """
-    Extracts salary information from a string and returns the salary interval, min and max salary values, and currency.
-    (TODO: Needs test cases as the regex is complicated and may not cover all edge cases)
-    """
-    if not salary_str:
+    """Compatibility wrapper around conservative, explicit-interval extraction."""
+
+    del hourly_threshold, monthly_threshold
+    inference = infer_salary_from_text(
+        f"Salary: {salary_str}",
+        currency_hint="USD",
+    )
+    if inference is None:
         return None, None, None, None
-
-    annual_max_salary = None
-    min_max_pattern = r"\$(\d+(?:,\d+)?(?:\.\d+)?)([kK]?)\s*[-—–]\s*(?:\$)?(\d+(?:,\d+)?(?:\.\d+)?)([kK]?)"
-
-    def to_number(s):
-        return float(s.replace(",", ""))
-
-    def convert_hourly_to_annual(hourly_wage):
-        return hourly_wage * 2080
-
-    def convert_monthly_to_annual(monthly_wage):
-        return monthly_wage * 12
-
-    match = re.search(min_max_pattern, salary_str)
-
-    if match:
-        min_salary = to_number(match.group(1))
-        max_salary = to_number(match.group(3))
-        # Handle 'k' suffix for min and max salaries independently
-        if "k" in match.group(2).lower() or "k" in match.group(4).lower():
-            min_salary *= 1000
-            max_salary *= 1000
-
-        # Convert to annual if less than the hourly threshold
-        if min_salary < hourly_threshold:
-            interval = CompensationInterval.HOURLY.value
-            annual_min_salary = convert_hourly_to_annual(min_salary)
-            if max_salary < hourly_threshold:
-                annual_max_salary = convert_hourly_to_annual(max_salary)
-
-        elif min_salary < monthly_threshold:
-            interval = CompensationInterval.MONTHLY.value
-            annual_min_salary = convert_monthly_to_annual(min_salary)
-            if max_salary < monthly_threshold:
-                annual_max_salary = convert_monthly_to_annual(max_salary)
-
-        else:
-            interval = CompensationInterval.YEARLY.value
-            annual_min_salary = min_salary
-            annual_max_salary = max_salary
-
-        # Ensure salary range is within specified limits
-        if not annual_max_salary:
-            return None, None, None, None
-        if (
-            lower_limit <= annual_min_salary <= upper_limit
-            and lower_limit <= annual_max_salary <= upper_limit
-            and annual_min_salary < annual_max_salary
-        ):
-            if enforce_annual_salary:
-                return (
-                    CompensationInterval.YEARLY.value,
-                    annual_min_salary,
-                    annual_max_salary,
-                    "USD",
-                )
-            else:
-                return interval, min_salary, max_salary, "USD"
-    return None, None, None, None
+    compensation = inference.compensation
+    annual = annualize_compensation(compensation)
+    if (
+        annual.min_amount is None
+        or annual.max_amount is None
+        or not lower_limit <= annual.min_amount <= upper_limit
+        or not lower_limit <= annual.max_amount <= upper_limit
+    ):
+        return None, None, None, None
+    output = annual if enforce_annual_salary else compensation
+    return (
+        output.interval.value,
+        output.min_amount,
+        output.max_amount,
+        output.currency,
+    )
 
 
 def extract_job_type(description: str):
@@ -361,6 +322,8 @@ desired_order = [
     "date_posted",
     "job_type",
     "salary_source",
+    "salary_confidence",
+    "salary_evidence",
     "interval",
     "min_amount",
     "max_amount",

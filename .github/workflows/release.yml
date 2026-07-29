@@ -27,17 +27,21 @@ jobs:
 
       - name: Install and verify project
         run: |
-          poetry install --no-interaction
+          poetry install --all-extras --no-interaction
           poetry check --lock
           poetry run pytest
-          poetry run ruff check jobstreaming tests
-          poetry run black --check jobstreaming tests
+          poetry run ruff check jobstreaming tests scripts
+          poetry run mypy
+          poetry run black --check jobstreaming tests scripts
 
       - name: Verify tag matches package version
         run: test "${GITHUB_REF_NAME#v}" = "$(poetry version --short)"
 
       - name: Build distributions
         run: poetry build
+
+      - name: Verify optional dependency metadata
+        run: python scripts/verify_batch_artifact.py dist/jobstreaming-*.whl
 
       - name: Verify wheel through an isolated consumer install
         shell: bash
@@ -48,7 +52,8 @@ jobs:
           observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
           test "$observed" = "${GITHUB_REF_NAME#v}"
           cd "$RUNNER_TEMP"
-          "$consumer/bin/python" -c 'from jobstreaming import SearchRequest, Site; assert SearchRequest(site_type=(Site.GOOGLE,)).sites == (Site.GOOGLE,)'
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
 
       - name: Verify source distribution through an isolated consumer install
         shell: bash
@@ -59,7 +64,8 @@ jobs:
           observed="$("$consumer/bin/python" -c 'from importlib.metadata import version; print(version("jobstreaming"))')"
           test "$observed" = "${GITHUB_REF_NAME#v}"
           cd "$RUNNER_TEMP"
-          "$consumer/bin/python" -c 'from jobstreaming import SearchRequest, Site; assert SearchRequest(site_type=(Site.GOOGLE,)).sites == (Site.GOOGLE,)'
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
+          "$consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
 
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

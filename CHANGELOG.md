@@ -19,6 +19,14 @@ still change when upstream boards drift.
 - DataFrame-independent `collect_jobs()` outcomes with sourced jobs, invocation-local
   per-site counters, chronological failures, explicit partial/failed status, and
   aggregate `SearchFailedError` strict mode; cancellation remains distinct.
+- Open, validated custom adapter identifiers plus an `Adapter` protocol and offline
+  `AdapterTestKit`.
+- Typed search-filter and resume-capability declarations, a `py.typed` marker, and a
+  static type-check gate for the SDK/core runtime surface.
+- A `batch` extra and typed `MissingOptionalDependencyError` for the optional
+  DataFrame compatibility API.
+- Explicit conservative description-salary inference with multilingual interval and
+  currency parsing plus typed provenance and confidence metadata.
 
 ### Changed
 
@@ -35,6 +43,15 @@ still change when upstream boards drift.
   ignoring it.
 - Indeed, Naukri, ZipRecruiter, and Glassdoor no longer use package-embedded shared
   credentials or fallback tokens.
+- Runtime adapter calls no longer inspect `scrape` signatures; legacy signatures are
+  isolated behind a deprecated registration bridge.
+- Pandas is no longer installed or imported by the default streaming package;
+  `jobstreaming[batch]` preserves the existing `scrape_jobs` DataFrame behavior.
+- Description salary extraction is now off by default instead of implicitly applying
+  a USD numeric-threshold heuristic; opt in with
+  `description_salary_policy="conservative"`.
+- Structured board compensation always takes precedence over description inference,
+  and batch rows expose flattened salary provenance fields.
 
 ### Fixed
 
@@ -47,6 +64,15 @@ still change when upstream boards drift.
   radius.
 - Unsupported Indeed and LinkedIn job-type values are omitted rather than raised or
   sent as empty parameters.
+- Legacy adapter bridges preserve registration cursor versions and non-resume
+  capability declarations, and forward lifecycle cleanup to wrapped adapters.
+- Custom adapter identifiers round-trip through SQLite checkpoints and typed outcome
+  summaries without being narrowed to built-in sites.
+- Resume granularities retain legacy/custom values through a normalized, open value
+  object.
+- Adapter factories and instances fail with typed contract errors when identifiers,
+  capabilities, or scrape callables are malformed.
+- Public protocol annotations remain resolvable from installed distributions.
 
 ## [0.0.2] - 2026-07-17
 

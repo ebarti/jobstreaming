@@ -11,8 +11,11 @@ from jobstreaming.model import (
     JobPost,
     JobResponse,
     Location,
+    Resumable,
+    ResumeGranularity,
     Scraper,
     ScraperInput,
+    SearchFilter,
     Site,
 )
 from jobstreaming.runtime import ScrapeContext
@@ -23,10 +26,8 @@ log = create_logger("Bayt")
 
 class BaytScraper(Scraper):
     capabilities = AdapterCapabilities(
-        filters=frozenset({"offset"}),
-        supports_resume=True,
-        resume_granularity="page",
-        cursor_schema_version=1,
+        filters=frozenset({SearchFilter.OFFSET}),
+        resume=Resumable(granularity=ResumeGranularity.PAGE),
     )
     base_url = "https://www.bayt.com"
     delay = 2

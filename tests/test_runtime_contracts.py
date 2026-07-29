@@ -23,6 +23,8 @@ from jobstreaming import (
     JobResponse,
     MemoryCheckpointStore,
     RateLimitError,
+    Resumable,
+    ResumeGranularity,
     Scraper,
     SearchCheckpoint,
     SearchRequest,
@@ -31,6 +33,7 @@ from jobstreaming import (
     TransientNetworkError,
     UnacknowledgedEventError,
     WarningEvent,
+    legacy_adapter,
     stream_jobs,
     stream_search,
 )
@@ -154,12 +157,24 @@ def test_close_winning_before_operation_start_never_invokes_adapter() -> None:
     release_registration = threading.Event()
     scrape_started = threading.Event()
 
-    class RegistrationWindowAdapter(Scraper):
-        @property
-        def capabilities(self) -> AdapterCapabilities:
-            registration_window.set()
-            release_registration.wait(timeout=1)
+    class RegistrationWindowCapabilities:
+        def __init__(self) -> None:
+            self._instance_reads = 0
+            self._lock = threading.Lock()
+
+        def __get__(self, instance, owner) -> AdapterCapabilities:
+            if instance is None:
+                return AdapterCapabilities()
+            with self._lock:
+                self._instance_reads += 1
+                read = self._instance_reads
+            if read == 2:
+                registration_window.set()
+                release_registration.wait(timeout=1)
             return AdapterCapabilities()
+
+    class RegistrationWindowAdapter(Scraper):
+        capabilities = RegistrationWindowCapabilities()
 
         def __init__(self, **_: object) -> None:
             super().__init__(Site.INDEED)
@@ -529,7 +544,7 @@ def test_structural_adapter_without_close_hook_remains_compatible() -> None:
         capabilities = AdapterCapabilities()
 
         def __init__(self, **_: object) -> None:
-            pass
+            self.site = Site.INDEED
 
         def scrape(self, request, context=None) -> JobResponse:
             return JobResponse(jobs=(_job(1),))
@@ -544,6 +559,35 @@ def test_structural_adapter_without_close_hook_remains_compatible() -> None:
         diagnostics = stream.wait_closed(1)
 
     assert any(isinstance(event, JobEvent) for event in events)
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_errors == ()
+
+
+def test_legacy_adapter_forwards_close_to_its_wrapped_transport_owner() -> None:
+    close_count = 0
+
+    class LegacyAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+
+        def scrape(self, request) -> JobResponse:
+            return JobResponse(jobs=(_job(1),))
+
+        def close(self) -> None:
+            nonlocal close_count
+            close_count += 1
+
+    registry = AdapterRegistry()
+    registry.register(Site.INDEED, legacy_adapter(LegacyAdapter))
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,), results_wanted=1),
+        registry=registry,
+    ) as stream:
+        events = list(stream)
+        diagnostics = stream.wait_closed(1)
+
+    assert any(isinstance(event, JobEvent) for event in events)
+    assert close_count == 1
     assert diagnostics.quiescent is True
     assert diagnostics.cleanup_errors == ()
 
@@ -747,9 +791,10 @@ def test_overall_checkpoint_schema_is_validated() -> None:
 def test_adapter_cursor_schema_is_validated_before_workers_start() -> None:
     class UpgradedAdapter(_TwoJobAdapter):
         capabilities = AdapterCapabilities(
-            supports_resume=True,
-            resume_granularity="page",
-            cursor_schema_version=2,
+            resume=Resumable(
+                granularity=ResumeGranularity.PAGE,
+                cursor_schema_version=2,
+            )
         )
 
     request = SearchRequest(site_type=(Site.INDEED,))
@@ -767,9 +812,10 @@ def test_adapter_cursor_schema_is_validated_before_workers_start() -> None:
 def test_new_checkpoint_records_the_registered_adapter_cursor_schema() -> None:
     class UpgradedAdapter(_TwoJobAdapter):
         capabilities = AdapterCapabilities(
-            supports_resume=True,
-            resume_granularity="page",
-            cursor_schema_version=2,
+            resume=Resumable(
+                granularity=ResumeGranularity.PAGE,
+                cursor_schema_version=2,
+            )
         )
 
     store = MemoryCheckpointStore()
