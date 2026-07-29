@@ -37,6 +37,7 @@ from jobstreaming.exception import (
     ErrorCode,
     StreamCancelledError,
     UnacknowledgedEventError,
+    _TransportCleanupError,
     classify_exception,
 )
 from jobstreaming.model import JobPost, Scraper, SearchRequest, Site
@@ -489,12 +490,12 @@ class SearchStream(Iterator[SearchEvent]):
 
     def _register_adapter(self, site: Site, scraper: object) -> bool:
         with self._lifecycle_lock:
+            self._managed_adapters.append((site, scraper))
             if self._closed:
                 should_close = True
             else:
                 should_close = False
                 self._open_adapters[id(scraper)] = (site, scraper)
-                self._managed_adapters.append((site, scraper))
         if should_close:
             self._schedule_adapter_close(site, scraper)
             return False
@@ -511,15 +512,14 @@ class SearchStream(Iterator[SearchEvent]):
             close = getattr(scraper, "close", None)
             if not callable(close):
                 return
-            errors_before = tuple(getattr(scraper, "transport_cleanup_errors", ()))
             try:
                 close()
+            except _TransportCleanupError:
+                pass
             except Exception as exc:
-                errors_after = tuple(getattr(scraper, "transport_cleanup_errors", ()))
-                if len(errors_after) == len(errors_before):
-                    message = f"{site.value}: {type(exc).__name__}: {exc}"
-                    with self._lifecycle_lock:
-                        self._cleanup_errors.append(message)
+                message = f"{site.value}: {type(exc).__name__}: {exc}"
+                with self._lifecycle_lock:
+                    self._cleanup_errors.append(message)
 
         self._cleanup_threads.start(
             name=f"jobstreaming-close-{site.value}",

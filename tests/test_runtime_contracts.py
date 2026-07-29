@@ -272,6 +272,39 @@ def test_adapter_cleanup_failures_are_preserved_in_diagnostics() -> None:
     assert diagnostics.cleanup_errors == ("indeed: RuntimeError: close failed",)
 
 
+def test_custom_close_failure_is_not_hidden_by_transport_failures() -> None:
+    class FailingTransport:
+        def close(self) -> None:
+            raise RuntimeError("transport close failed")
+
+    class CustomCloseAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+            self.track_transport(FailingTransport())
+
+        def scrape(self, request, context=None) -> JobResponse:
+            return JobResponse()
+
+        def close(self) -> None:
+            try:
+                super().close()
+            except Exception:
+                raise ValueError("custom close failed") from None
+
+    with stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=_registry(CustomCloseAdapter),
+    ) as stream:
+        list(stream)
+        diagnostics = stream.wait_closed(1)
+
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_errors == (
+        "indeed: ValueError: custom close failed",
+        "indeed: transport cleanup: RuntimeError: transport close failed",
+    )
+
+
 def test_transport_created_after_adapter_close_is_closed_and_rejected() -> None:
     close_count = 0
 
@@ -354,6 +387,103 @@ def test_transport_scopes_bound_detail_session_retention() -> None:
     adapter.close()
     assert maximum_tracked == 9
     assert closed == 801
+
+
+def test_concurrent_transport_scopes_cannot_close_each_others_transports() -> None:
+    first_entered = threading.Event()
+    second_attempting = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    failures: list[BaseException] = []
+
+    class Transport:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    adapter = _TwoJobAdapter()
+    transports: dict[str, Transport] = {}
+
+    def first_scope() -> None:
+        try:
+            with adapter.transport_scope():
+                transport = Transport()
+                transports["first"] = transport
+                adapter.track_transport(transport)
+                first_entered.set()
+                release_first.wait(timeout=1)
+                assert transport.closed is False
+            assert transport.closed is True
+        except BaseException as exc:
+            failures.append(exc)
+
+    def second_scope() -> None:
+        try:
+            assert first_entered.wait(timeout=1)
+            second_attempting.set()
+            with adapter.transport_scope():
+                second_entered.set()
+                transport = Transport()
+                transports["second"] = transport
+                adapter.track_transport(transport)
+                assert transport.closed is False
+            assert transport.closed is True
+        except BaseException as exc:
+            failures.append(exc)
+
+    first = threading.Thread(target=first_scope)
+    second = threading.Thread(target=second_scope)
+    first.start()
+    assert first_entered.wait(timeout=1)
+    second.start()
+    assert second_attempting.wait(timeout=1)
+    assert second_entered.wait(timeout=0.05) is False
+
+    release_first.set()
+    assert second_entered.wait(timeout=1)
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert first.is_alive() is False
+    assert second.is_alive() is False
+    assert failures == []
+    assert transports["first"].closed is True
+    assert transports["second"].closed is True
+    assert adapter.tracked_transport_count == 0
+
+
+def test_shutdown_winning_registration_retains_transport_failures() -> None:
+    constructor_started = threading.Event()
+    release_constructor = threading.Event()
+
+    class FailingTransport:
+        def close(self) -> None:
+            raise RuntimeError("shutdown-win close failed")
+
+    class LateAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+            self.track_transport(FailingTransport())
+            constructor_started.set()
+            release_constructor.wait(timeout=1)
+
+        def scrape(self, request, context=None) -> JobResponse:
+            raise AssertionError("closed adapters must not start scraping")
+
+    stream = stream_search(
+        SearchRequest(site_type=(Site.INDEED,)),
+        registry=_registry(LateAdapter),
+    )
+    assert constructor_started.wait(timeout=1)
+    stream.close()
+    release_constructor.set()
+    diagnostics = stream.wait_closed(1)
+
+    assert diagnostics.quiescent is True
+    assert diagnostics.cleanup_errors == (
+        "indeed: transport cleanup: RuntimeError: shutdown-win close failed",
+    )
 
 
 def test_structural_adapter_without_close_hook_remains_compatible() -> None:

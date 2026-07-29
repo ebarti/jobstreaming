@@ -390,9 +390,11 @@ Register every closeable client/session with `track_transport()`, including sess
 created lazily or inside detail-worker threads. The base `Scraper.close()` closes each
 registered transport once; adapters with additional resources can override `close()`
 and call `super().close()`. Use `transport_scope()` around a bounded page/detail batch
-so its thread-local sessions are released before the next page. A transport registered
-after adapter shutdown is closed and rejected with `RuntimeError`; it is never returned
-to adapter code as a usable client. Transport close failures remain visible in
+so its thread-local sessions are released before the next page. Scopes are reentrant
+and serialize overlapping batches on the same adapter, preventing one batch from
+closing transports owned by another. A transport registered after adapter shutdown is
+closed and rejected with `RuntimeError`; it is never returned to adapter code as a
+usable client. Transport close failures remain visible in
 `stream.diagnostics.cleanup_errors`, including failures from late registration races.
 
 The registry can replace any built-in adapter. Adding an entirely new site also

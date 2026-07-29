@@ -90,6 +90,10 @@ class UnacknowledgedEventError(RuntimeError):
     """Raised when explicit acknowledgement is required before another delivery."""
 
 
+class _TransportCleanupError(RuntimeError):
+    """Internal aggregate for failures already recorded by transport ownership."""
+
+
 class AdapterFailureError(JobStreamingError):
     pass
 

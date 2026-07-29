@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 from enum import Enum
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any
 
 from pydantic import (
@@ -17,6 +17,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from jobstreaming.exception import _TransportCleanupError
 
 
 class JobType(Enum):
@@ -433,6 +435,7 @@ class Scraper(ABC):
         self.ca_cert = ca_cert
         self.user_agent = user_agent
         self._transport_lock = Lock()
+        self._transport_scope_lock = RLock()
         self._transports: list[Any] = []
         self._transports_closed = False
         self._transport_cleanup_errors: list[str] = []
@@ -464,7 +467,7 @@ class Scraper(ABC):
                 self._record_transport_cleanup_error(exc)
                 errors.append(exc)
         if errors:
-            raise RuntimeError(
+            raise _TransportCleanupError(
                 f"{self.site.value} failed to close {len(errors)} transport(s)"
             ) from errors[0]
 
@@ -500,35 +503,36 @@ class Scraper(ABC):
     def transport_scope(self) -> Iterator[None]:
         """Close transports created inside a bounded adapter operation."""
 
-        with self._transport_lock:
-            baseline = frozenset(id(transport) for transport in self._transports)
-        body_failed = False
-        try:
-            yield
-        except BaseException:
-            body_failed = True
-            raise
-        finally:
+        with self._transport_scope_lock:
             with self._transport_lock:
-                scoped = tuple(
-                    reversed(
-                        [
-                            transport
-                            for transport in self._transports
-                            if id(transport) not in baseline
-                        ]
-                    )
-                )
-                self._transports = [
-                    transport
-                    for transport in self._transports
-                    if id(transport) in baseline
-                ]
+                baseline = frozenset(id(transport) for transport in self._transports)
+            body_failed = False
             try:
-                self._close_transports(scoped)
-            except Exception:
-                if not body_failed:
-                    raise
+                yield
+            except BaseException:
+                body_failed = True
+                raise
+            finally:
+                with self._transport_lock:
+                    scoped = tuple(
+                        reversed(
+                            [
+                                transport
+                                for transport in self._transports
+                                if id(transport) not in baseline
+                            ]
+                        )
+                    )
+                    self._transports = [
+                        transport
+                        for transport in self._transports
+                        if id(transport) in baseline
+                    ]
+                try:
+                    self._close_transports(scoped)
+                except Exception:
+                    if not body_failed:
+                        raise
 
     def close(self) -> None:
         """Close every transport registered by the adapter exactly once."""
