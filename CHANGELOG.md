@@ -11,7 +11,10 @@ still change when upstream boards drift.
 - Value-level adapter capability warnings for unsupported job types.
 - Public security, contribution, support, and adapter-configuration guidance.
 - `Retry-After` metadata on retryable terminal error events.
-- Isolated wheel and source-distribution consumer checks in the release workflow.
+- Isolated wheel and source-distribution consumer checks in CI and the release
+  workflow.
+- SHA-256 release checksums and GitHub-hosted SLSA build provenance for wheel and
+  source distributions.
 - Open, validated custom adapter identifiers plus an `Adapter` protocol and offline
   `AdapterTestKit`.
 - Typed search-filter and resume-capability declarations, a `py.typed` marker, and a
@@ -32,6 +35,8 @@ still change when upstream boards drift.
   credentials or fallback tokens.
 - Runtime adapter calls no longer inspect `scrape` signatures; legacy signatures are
   isolated behind a deprecated registration bridge.
+- PyPI releases use a separated, least-privilege Trusted Publishing job with
+  attestations enabled.
 
 ### Fixed
 
