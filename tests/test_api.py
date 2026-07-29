@@ -9,6 +9,7 @@ from jobstreaming import (
     JobPost,
     JobResponse,
     Scraper,
+    SearchFailedError,
     Site,
     build_search_request,
     scrape_jobs,
@@ -65,12 +66,13 @@ def test_batch_api_returns_partial_results_with_a_stable_schema() -> None:
 
     assert list(frame.columns) == desired_order
     assert frame["id"].tolist() == ["in-1"]
+    assert frame["site"].tolist() == ["indeed"]
     assert frame.loc[0, "interval"] == "yearly"
     assert frame.loc[0, "min_amount"] == 41_600
 
 
 def test_batch_api_can_fail_strictly_after_preserving_site_isolation() -> None:
-    with pytest.raises(RuntimeError, match="linkedin failed"):
+    with pytest.raises(SearchFailedError, match="linkedin failed") as raised:
         scrape_jobs(
             site_name=["indeed", "linkedin"],
             results_wanted=1,
@@ -78,6 +80,11 @@ def test_batch_api_can_fail_strictly_after_preserving_site_isolation() -> None:
             raise_on_error=True,
             max_retries=0,
         )
+
+    assert isinstance(raised.value, RuntimeError)
+    assert raised.value.outcome.total_jobs == 1
+    assert raised.value.outcome.total_failures == 1
+    assert raised.value.jobs[0].site is Site.INDEED
 
 
 def test_stream_jobs_exposes_the_simple_job_only_interface() -> None:

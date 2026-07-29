@@ -17,6 +17,9 @@ still change when upstream boards drift.
 - Transactional `SqliteCheckpointStore` persistence with compare-and-swap revisions
   and incremental seen-key acknowledgements.
 - An `AtomicCheckpointStore` capability for all-or-nothing checkpoint replacement.
+- DataFrame-independent `collect_jobs()` outcomes with sourced jobs, invocation-local
+  per-site counters, chronological failures, explicit partial/failed status, and
+  aggregate `SearchFailedError` strict mode; cancellation remains distinct.
 - SHA-256 release checksums and GitHub-hosted SLSA build provenance for wheel and
   source distributions.
 - Open, validated custom adapter identifiers plus an `Adapter` protocol and offline

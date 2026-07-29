@@ -33,8 +33,10 @@ separate project, distribution, and import identity.
 - Adapter failures are isolated. The batch API returns healthy partial results unless
   strict failure mode is requested.
 - Requests and result models are immutable and validated.
-- An optional `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and
-  analysis workflows.
+- A typed `collect_jobs(...) -> SearchOutcome` entry point preserves source identity,
+  per-site terminal summaries, and chronological failures without building a DataFrame.
+- An optional `scrape_jobs(...) -> pandas.DataFrame` entry point for batch and analysis
+  workflows.
 - Adapters are registered through an extensible registry rather than a hard-coded
   dispatcher.
 
@@ -44,6 +46,7 @@ Choose the interface that matches your consumer:
 |---|---|
 | Durable ingestion with progress, errors, and explicit acknowledgement | `stream_search` |
 | A simple iterator of normalized jobs | `stream_jobs` |
+| A typed aggregate with source identity and per-site outcomes | `collect_jobs` |
 | A Pandas DataFrame for notebooks, exports, or batch analysis | `scrape_jobs` with the `batch` extra |
 | Application-owned checkpoint persistence | `CheckpointStore` |
 | Replacing or extending source behavior | `AdapterRegistry` |
@@ -249,7 +252,48 @@ implementations continue receiving complete snapshots through `save()`.
 If a process crashes while handling a job, replay is expected. Make downstream writes
 idempotent using `event.job_key` or the job's stable `id`.
 
-## Compatible batch API
+## Typed and DataFrame batch APIs
+
+Use `collect_jobs` when application code needs a complete typed outcome:
+
+```python
+from jobstreaming import SearchOutcomeStatus, collect_jobs
+
+outcome = collect_jobs(
+    site_name=["indeed", "linkedin", "google"],
+    search_term="software engineer",
+    location="Madrid",
+    results_wanted=20,
+)
+
+for sourced in outcome.jobs:
+    print(sourced.site.value, sourced.job.title)
+
+for site in outcome.sites:
+    print(site.site.value, site.jobs_emitted, site.failure_count, site.completed)
+
+if outcome.status is SearchOutcomeStatus.PARTIAL:
+    handle_partial_result(outcome)
+```
+
+`SUCCEEDED` means every requested site reached terminal completion. `PARTIAL` means a
+failure occurred after at least one job was emitted or another site completed;
+`FAILED` means no site completed and no job was retained. Aggregate failures are
+ordered by stream sequence, not request-site order. Set `raise_on_error=True` to raise
+`SearchFailedError` only after collection finishes; the exception remains compatible
+with `RuntimeError` and carries the full outcome, including partial jobs and every
+failure.
+
+Outcome totals and `jobs_emitted` counters describe only the current invocation. On a
+resumed search, an already-completed site is reported as completed with zero newly
+emitted jobs. Cancellation is not a failed outcome: `collect_jobs` propagates
+`StreamCancelledError`, while its managed stream still performs the same transport
+shutdown and bounded cleanup described below.
+
+`collect_jobs` does not construct a DataFrame and remains available in the default
+installation without Pandas.
+
+Use `scrape_jobs` when the desired result is a Pandas DataFrame:
 
 Install `jobstreaming[batch]` before using this compatibility API:
 
@@ -269,10 +313,10 @@ jobs = scrape_jobs(
 jobs.to_csv("jobs.csv", index=False)
 ```
 
-`scrape_jobs` consumes the same concurrent event stream and returns a DataFrame. By
-default, a failed site is logged and healthy partial results are returned. Set
-`raise_on_error=True` to raise after all sites have had a chance to finish.
-Calling it from a core-only installation raises
+`scrape_jobs` delegates collection to the typed outcome path, logs site failures, and
+converts retained jobs to a DataFrame. By default, healthy partial results are
+returned. Its `raise_on_error=True` mode raises the same `SearchFailedError` after all
+sites have had a chance to finish. Calling it from a core-only installation raises
 `MissingOptionalDependencyError` before any adapter or network work begins, with the
 exact extra needed to enable it.
 

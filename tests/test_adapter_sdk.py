@@ -30,6 +30,7 @@ from jobstreaming import (
     Site,
     SqliteCheckpointStore,
     WarningEvent,
+    collect_jobs,
     legacy_adapter,
     parse_adapter_identifier,
     stream_search,
@@ -120,20 +121,22 @@ def test_structural_adapter_protocol_streams_a_custom_site() -> None:
     assert restored.adapters[CUSTOM_ID.value].site == CUSTOM_ID
 
 
-def test_custom_identifier_round_trips_through_sqlite(tmp_path) -> None:
+def test_custom_identifier_round_trips_through_sqlite_and_outcomes(tmp_path) -> None:
     registry = AdapterRegistry()
     registry.register(CUSTOM_ID, FixtureAdapter)
     store = SqliteCheckpointStore(tmp_path / "custom-adapter.sqlite3")
     request = SearchRequest(site_type=(CUSTOM_ID,), results_wanted=1)
 
-    with stream_search(
+    outcome = collect_jobs(
         request,
         registry=registry,
         checkpoint_store=store,
-    ) as stream:
-        events = list(stream)
+    )
 
-    assert any(isinstance(event, JobEvent) for event in events)
+    assert [(item.site, item.job.id) for item in outcome.jobs] == [
+        (CUSTOM_ID, "acme-1")
+    ]
+    assert outcome.summary_for(CUSTOM_ID).completed is True
     checkpoint = store.load()
     assert checkpoint is not None
     assert checkpoint.adapters[CUSTOM_ID.value].site == CUSTOM_ID

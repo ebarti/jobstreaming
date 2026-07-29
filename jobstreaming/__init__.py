@@ -18,6 +18,7 @@ from jobstreaming.checkpoint import (
     MemoryCheckpointStore,
     SqliteCheckpointStore,
 )
+from jobstreaming.collector import collect_jobs
 from jobstreaming.events import (
     AdapterCheckpoint,
     ErrorEvent,
@@ -68,6 +69,14 @@ from jobstreaming.model import (
     SearchRequest,
     Site,
     parse_adapter_identifier,
+)
+from jobstreaming.outcome import (
+    SearchFailedError,
+    SearchFailure,
+    SearchOutcome,
+    SearchOutcomeStatus,
+    SiteSearchSummary,
+    SourcedJob,
 )
 from jobstreaming.protocols import Adapter, AdapterFactory
 from jobstreaming.registry import AdapterRegistry, default_registry, legacy_adapter
@@ -135,17 +144,24 @@ __all__ = [
     "SearchFilter",
     "SearchCheckpoint",
     "SearchCompleteEvent",
+    "SearchFailedError",
+    "SearchFailure",
+    "SearchOutcome",
+    "SearchOutcomeStatus",
     "SearchRequest",
     "SearchStream",
     "Site",
     "SiteCompleteEvent",
+    "SiteSearchSummary",
     "SqliteCheckpointStore",
+    "SourcedJob",
     "StreamCancelledError",
     "StreamDiagnostics",
     "TransientNetworkError",
     "UnacknowledgedEventError",
     "WarningEvent",
     "build_search_request",
+    "collect_jobs",
     "default_registry",
     "legacy_adapter",
     "parse_adapter_identifier",
