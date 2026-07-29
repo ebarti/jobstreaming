@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -164,16 +165,67 @@ def test_checkpoint_rejects_a_different_request() -> None:
         stream_search(changed, registry=_registry(), checkpoint_store=store)
 
 
-def test_json_checkpoint_round_trip(tmp_path) -> None:
+def test_resume_false_preserves_generic_store_clear_then_save_contract() -> None:
+    calls: list[str] = []
+
+    class GenericStore:
+        checkpoint = SearchCheckpoint.for_request(
+            SearchRequest(site_type=(Site.INDEED,), search_term="python")
+        )
+
+        def load(self) -> SearchCheckpoint | None:
+            return self.checkpoint
+
+        def save(self, checkpoint: SearchCheckpoint) -> None:
+            calls.append("save")
+            self.checkpoint = checkpoint
+
+        def clear(self) -> None:
+            calls.append("clear")
+            self.checkpoint = None
+
+    stream = stream_search(
+        SearchRequest(site_type=(Site.INDEED,), search_term="rust"),
+        registry=_registry(),
+        checkpoint_store=GenericStore(),
+        resume=False,
+    )
+    stream.close()
+
+    assert calls[:2] == ["clear", "save"]
+
+
+def test_checkpoint_generation_round_trips_memory_and_json(tmp_path) -> None:
     path = tmp_path / "nested" / "checkpoint.json"
-    store = JsonFileCheckpointStore(path)
     request = SearchRequest(site_type=(Site.INDEED,), search_term="python")
     checkpoint = SearchCheckpoint.for_request(request)
+    memory_store = MemoryCheckpointStore()
+    json_store = JsonFileCheckpointStore(path)
 
-    store.save(checkpoint)
+    memory_store.save(checkpoint)
+    json_store.save(checkpoint)
 
-    assert store.load() == checkpoint
+    assert memory_store.load() == checkpoint
+    assert json_store.load() == checkpoint
+    assert memory_store.load().generation == checkpoint.generation
+    assert json_store.load().generation == checkpoint.generation
     assert not list(path.parent.glob("*.tmp"))
+
+
+def test_checkpoint_generations_are_fresh_with_a_stable_legacy_default() -> None:
+    request = SearchRequest(site_type=(Site.INDEED,), search_term="python")
+    first = SearchCheckpoint.for_request(request)
+    second = SearchCheckpoint.for_request(request)
+    legacy_payload = first.model_dump(mode="json")
+    legacy_payload.pop("generation")
+
+    legacy_json = json.dumps(legacy_payload)
+    first_legacy = SearchCheckpoint.model_validate_json(legacy_json)
+    second_legacy = SearchCheckpoint.model_validate_json(legacy_json)
+
+    assert first.generation != second.generation
+    assert first_legacy.generation == second_legacy.generation
+    assert first_legacy.generation not in {first.generation, second.generation}
 
 
 def test_legacy_batch_adapter_is_still_supported() -> None:

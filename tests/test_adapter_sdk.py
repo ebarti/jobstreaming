@@ -28,6 +28,7 @@ from jobstreaming import (
     SearchRequest,
     SearchStream,
     Site,
+    SqliteCheckpointStore,
     WarningEvent,
     legacy_adapter,
     parse_adapter_identifier,
@@ -117,6 +118,26 @@ def test_structural_adapter_protocol_streams_a_custom_site() -> None:
     assert checkpoint.adapters[CUSTOM_ID.value].site == CUSTOM_ID
     restored = SearchCheckpoint.model_validate_json(checkpoint.model_dump_json())
     assert restored.adapters[CUSTOM_ID.value].site == CUSTOM_ID
+
+
+def test_custom_identifier_round_trips_through_sqlite(tmp_path) -> None:
+    registry = AdapterRegistry()
+    registry.register(CUSTOM_ID, FixtureAdapter)
+    store = SqliteCheckpointStore(tmp_path / "custom-adapter.sqlite3")
+    request = SearchRequest(site_type=(CUSTOM_ID,), results_wanted=1)
+
+    with stream_search(
+        request,
+        registry=registry,
+        checkpoint_store=store,
+    ) as stream:
+        events = list(stream)
+
+    assert any(isinstance(event, JobEvent) for event in events)
+    checkpoint = store.load()
+    assert checkpoint is not None
+    assert checkpoint.adapters[CUSTOM_ID.value].site == CUSTOM_ID
+    assert checkpoint.generation != "legacy"
 
 
 def test_adapter_test_kit_runs_an_offline_resume_fixture() -> None:

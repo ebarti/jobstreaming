@@ -26,7 +26,8 @@ separate project, distribution, and import identity.
 - Searches run concurrently across sites; a slow or blocked site does not hold back
   healthy sites.
 - Jobs, warnings, progress, site failures, and completion are typed events.
-- JSON checkpoints make searches restartable with at-least-once delivery.
+- JSON checkpoints make searches restartable with at-least-once delivery; an optional
+  SQLite store scales acknowledgement history without rewriting old keys.
 - Stable job identities and checkpointed deduplication prevent acknowledged jobs from
   being emitted again after a restart.
 - Adapter failures are isolated. The batch API returns healthy partial results unless
@@ -161,6 +162,7 @@ checkpoint acknowledgements.
 ## Restart and delivery semantics
 
 Checkpointing is opt-in. Pass either `checkpoint_path` or a custom `CheckpointStore`.
+`checkpoint_path` intentionally remains the simple JSON default.
 
 - The default `ack_mode="implicit"` preserves the convenient behavior where requesting
   the next event acknowledges the previous event.
@@ -185,18 +187,64 @@ Checkpointing is opt-in. Pass either `checkpoint_path` or a custom `CheckpointSt
   honored, capped at five minutes. The selected delay is the larger of `Retry-After`
   and exponential `retry_backoff`.
 - The checkpoint is written through an `fsync` plus atomic file replacement.
-- Checkpoints carry an overall schema version, a monotonically increasing revision, and
-  a cursor-state schema version for every adapter. An incompatible library or adapter
-  upgrade raises `CheckpointCompatibilityError` before any board worker starts.
+- Checkpoints carry an overall schema version, an opaque generation identity, a
+  monotonically increasing revision within that generation, and a cursor-state schema
+  version for every adapter. An incompatible library or adapter upgrade raises
+  `CheckpointCompatibilityError` before any board worker starts.
 - A checkpoint is bound to the complete request fingerprint. Changing the query,
   filters, sites, or result count raises `CheckpointMismatchError`; use a new path or
   `resume=False` for a new search.
 - Board-owned cursors can expire. If a board rejects an old cursor, the stream emits an
   `ErrorEvent` with `code="cursor_expired"` and `reset_checkpoint=True`; restart that
   site from a fresh checkpoint.
-- Custom stores can provide compare-and-swap ownership using `checkpoint.revision`.
-  Raise `CheckpointConflictError` for a stale save; the conflict is surfaced to the
-  caller immediately and the stream stops without advancing its local checkpoint.
+- Custom stores can provide compare-and-swap ownership using both
+  `checkpoint.generation` and `checkpoint.revision`. Raise
+  `CheckpointConflictError` for a stale save; the conflict is surfaced to the caller
+  immediately and the stream stops without advancing its local checkpoint.
+
+For long-running or high-volume searches, use the stdlib-only SQLite store:
+
+```python
+from jobstreaming import SqliteCheckpointStore, stream_search
+
+store = SqliteCheckpointStore(".jobstreaming/search.sqlite3")
+
+with stream_search(
+    site_name=["indeed", "linkedin"],
+    search_term="platform engineer",
+    checkpoint_store=store,
+    ack_mode="explicit",
+) as stream:
+    for event in stream:
+        persist(event)
+        stream.ack(event)
+```
+
+One SQLite file owns one search checkpoint aggregate. Its header, adapter state, and
+ordered seen-key history advance in one `BEGIN IMMEDIATE` transaction. Revision
+compare-and-swap rejects concurrent stale owners, and each job acknowledgement appends
+one key instead of serializing or rewriting all historical keys. `load()` reconstructs
+the complete public `SearchCheckpoint` only when starting/resuming a stream or when
+checkpoint introspection is requested. Call `store.clear()` or use `resume=False` to
+replace the file with a new search. A cleared and reseeded checkpoint receives a new
+generation, so an owner from before the clear cannot pass compare-and-swap even when
+the new search has the same request fingerprint and restarts at revision zero.
+Serialized checkpoints and supported SQLite schema-version-1 databases created before
+this field existed load under a stable legacy generation; SQLite adds the missing
+column only after its future-schema compatibility preflight succeeds.
+
+Built-in stores implement `AtomicCheckpointStore`, so `resume=False` replaces an
+existing search checkpoint in one all-or-nothing transition. Custom stores that only
+implement `CheckpointStore` remain compatible and retain the existing `clear()` then
+`save()` reset sequence; implement `AtomicCheckpointStore.replace()` when a custom
+backend must preserve its previous checkpoint if reseeding fails. The method returns
+the checkpoint that was actually persisted, allowing a store to advance its revision
+as part of the replacement. SQLite does so when a prior checkpoint exists, fencing
+stale owners even when the replacement uses the same request fingerprint.
+
+Custom high-volume stores can independently implement `IncrementalCheckpointStore`
+and accept the immutable `CheckpointWrite` command. Ordinary `CheckpointStore`
+implementations continue receiving complete snapshots through `save()`.
 
 If a process crashes while handling a job, replay is expected. Make downstream writes
 idempotent using `event.job_key` or the job's stable `id`.
@@ -501,6 +549,14 @@ poetry build
 python scripts/verify_release_artifacts.py \
   --expected-version "$(poetry version --short)" \
   --dist-dir dist
+```
+
+The deterministic checkpoint benchmark uses fixed 10,000 and 100,000
+acknowledgement workloads, verifies final revisions and key counts, and reports
+elapsed time and database size without a timing assertion:
+
+```bash
+poetry run python -m tools.benchmark_checkpoints
 ```
 
 The test suite is offline: it validates domain invariants, concurrency, failure

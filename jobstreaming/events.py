@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, TypeAlias, cast
+from uuid import uuid4
 
 from pydantic import Field
 
@@ -18,6 +19,7 @@ from jobstreaming.model import (
 )
 
 CHECKPOINT_VERSION = 1
+LEGACY_CHECKPOINT_GENERATION = "legacy"
 
 
 def freeze_state(state: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -151,6 +153,7 @@ class AdapterCheckpoint(FrozenModel):
 class SearchCheckpoint(FrozenModel):
     version: int = CHECKPOINT_VERSION
     revision: int = Field(default=0, ge=0)
+    generation: str = Field(default=LEGACY_CHECKPOINT_GENERATION, min_length=1)
     request_fingerprint: str
     adapters: dict[str, AdapterCheckpoint] = Field(default_factory=dict)
     completed: bool = False
@@ -164,6 +167,7 @@ class SearchCheckpoint(FrozenModel):
     ) -> SearchCheckpoint:
         versions = cursor_schema_versions or {}
         return cls(
+            generation=uuid4().hex,
             request_fingerprint=request.fingerprint(),
             adapters={
                 site.value: AdapterCheckpoint(

@@ -819,7 +819,10 @@ class _CompareAndSwapStore:
             if self.checkpoint is None:
                 if checkpoint.revision != 0:
                     raise CheckpointConflictError("initial revision must be zero")
-            elif checkpoint.revision != self.checkpoint.revision + 1:
+            elif (
+                checkpoint.generation != self.checkpoint.generation
+                or checkpoint.revision != self.checkpoint.revision + 1
+            ):
                 raise CheckpointConflictError("stale checkpoint owner")
             self.checkpoint = checkpoint.model_copy(deep=True)
 

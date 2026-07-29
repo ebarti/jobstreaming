@@ -14,6 +14,9 @@ still change when upstream boards drift.
 - Isolated wheel and source-distribution consumer checks in CI and the release
   workflow.
 - Bounded `wait_closed()` lifecycle diagnostics and adapter transport ownership.
+- Transactional `SqliteCheckpointStore` persistence with compare-and-swap revisions
+  and incremental seen-key acknowledgements.
+- An `AtomicCheckpointStore` capability for all-or-nothing checkpoint replacement.
 - SHA-256 release checksums and GitHub-hosted SLSA build provenance for wheel and
   source distributions.
 - Open, validated custom adapter identifiers plus an `Adapter` protocol and offline
@@ -54,6 +57,11 @@ still change when upstream boards drift.
 
 ### Fixed
 
+- SQLite replacement now rolls back to the previous checkpoint when reseeding fails,
+  advances the revision to fence stale owners, rejects future schemas before creating
+  current tables, and closes connections when setup fails. Checkpoint generations
+  fence owners across an explicit clear and same-request reseed; version-1 SQLite and
+  legacy serialized checkpoints without the field use a stable legacy generation.
 - ZipRecruiter rounds partial-day age filters up and preserves an explicit zero-mile
   radius.
 - Unsupported Indeed and LinkedIn job-type values are omitted rather than raised or
