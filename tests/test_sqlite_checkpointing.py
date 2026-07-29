@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Callable
+from contextlib import closing
 
 import pytest
 
@@ -188,7 +189,7 @@ def test_future_sqlite_schema_is_rejected_without_adding_current_tables(
     tmp_path,
 ) -> None:
     path = tmp_path / "future.sqlite3"
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript("""
             CREATE TABLE jobstreaming_checkpoint_schema (
                 singleton INTEGER PRIMARY KEY,
@@ -217,7 +218,7 @@ def test_future_sqlite_schema_is_rejected_without_adding_current_tables(
     with pytest.raises(CheckpointCompatibilityError):
         SqliteCheckpointStore(path)
 
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         after = tuple(row[0] for row in connection.execute("""
                 SELECT name
                 FROM sqlite_master
@@ -243,7 +244,7 @@ def test_supported_v1_sqlite_schema_migrates_legacy_generation(tmp_path) -> None
     legacy_payload.pop("generation")
     legacy_payload["adapters"] = {}
     legacy = SearchCheckpoint.model_validate(legacy_payload)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript("""
             CREATE TABLE jobstreaming_checkpoint_schema (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -284,7 +285,7 @@ def test_supported_v1_sqlite_schema_migrates_legacy_generation(tmp_path) -> None
     migrated = store.load()
 
     assert migrated == legacy
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         columns = {
             row[1]
             for row in connection.execute(
@@ -535,7 +536,7 @@ def test_incremental_seen_key_table_is_append_only(tmp_path) -> None:
     path = tmp_path / "checkpoint.sqlite3"
     store = SqliteCheckpointStore(path)
     request = SearchRequest(site_type=(Site.INDEED,), results_wanted=5)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript("""
             CREATE TRIGGER forbid_seen_key_update
             BEFORE UPDATE ON jobstreaming_seen_job_key
@@ -679,7 +680,7 @@ def test_resume_false_reseed_failure_preserves_existing_sqlite_search(
     before = store.load()
     assert before is not None
 
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript("""
             CREATE TRIGGER fail_replacement_adapter_insert
             BEFORE INSERT ON jobstreaming_adapter_checkpoint

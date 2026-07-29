@@ -4,6 +4,8 @@
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
+**/.coverage
+**/htmlcov/
 /.ipynb_checkpoints/
 **/output/
 **/.DS_Store
