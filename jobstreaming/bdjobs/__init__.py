@@ -135,7 +135,10 @@ class BDJobs(Scraper):
             raw_seen += len(cards)
             context.emit_progress(
                 {"page": page + 1, "raw_seen": raw_seen},
-                f"completed BDJobs page {page}",
+                completed_units=page,
+                raw_items_seen=raw_seen,
+                has_more=None,
+                message=f"completed BDJobs page {page}",
             )
             if not context.should_continue:
                 break

@@ -140,6 +140,12 @@ class ZipRecruiter(Scraper):
         continue_token = state.get("continue_token")
         skipped = int(state.get("skipped", 0))
         page = int(state.get("page", 1))
+        saved_raw_seen = state.get("raw_seen")
+        raw_seen = (
+            int(saved_raw_seen)
+            if saved_raw_seen is not None
+            else (0 if page == 1 else None)
+        )
 
         try:
             self._get_cookies()
@@ -155,8 +161,9 @@ class ZipRecruiter(Scraper):
                 "continue_token": continue_token,
                 "page": page,
                 "skipped": skipped,
+                "raw_seen": raw_seen,
             }
-            jobs_on_page, next_token, skipped = self._find_jobs_in_page(
+            jobs_on_page, next_token, skipped, raw_count = self._find_jobs_in_page(
                 scraper_input,
                 context,
                 continue_token,
@@ -165,13 +172,18 @@ class ZipRecruiter(Scraper):
             )
             if jobs_on_page:
                 job_list.extend(jobs_on_page)
+            raw_seen = raw_seen + raw_count if raw_seen is not None else None
             context.emit_progress(
                 {
                     "continue_token": next_token,
                     "page": page + 1,
                     "skipped": skipped,
+                    "raw_seen": raw_seen,
                 },
-                f"completed ZipRecruiter page {page}",
+                completed_units=page,
+                raw_items_seen=raw_seen,
+                has_more=next_token is not None,
+                message=f"completed ZipRecruiter page {page}",
             )
             if not next_token:
                 break
@@ -186,7 +198,7 @@ class ZipRecruiter(Scraper):
         continue_token: str | None,
         skipped: int,
         page_state: dict[str, object],
-    ) -> tuple[list[JobPost], str | None, int]:
+    ) -> tuple[list[JobPost], str | None, int, int]:
         """
         Scrapes a page of ZipRecruiter for jobs with scraper_input criteria
         :param scraper_input:
@@ -242,7 +254,7 @@ class ZipRecruiter(Scraper):
                     continue
                 if job_post and context.emit_job(job_post, page_state):
                     job_list.append(job_post)
-        return job_list, next_continue_token, skipped
+        return job_list, next_continue_token, skipped, len(jobs_list)
 
     def _process_job(self, job: dict) -> JobPost | None:
         """

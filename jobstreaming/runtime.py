@@ -4,12 +4,12 @@ import math
 import queue
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
-from typing import cast
+from typing import Any, cast
 
 from jobstreaming.checkpoint import (
     AtomicCheckpointStore,
@@ -169,6 +169,7 @@ class SearchStream(Iterator[SearchEvent]):
         self._total_jobs = 0
         self._total_errors = 0
         self._last_delivered: SearchEvent | None = None
+        self._last_resume_state: Mapping[str, Any] | None = None
         self._last_acknowledged = True
         self._terminal_delivered = False
         self._closed = False
@@ -673,11 +674,12 @@ class SearchStream(Iterator[SearchEvent]):
                 )
                 self._total_jobs += 1
             elif message.type is _MessageType.PROGRESS:
+                assert message.progress is not None
                 stream_event = ProgressEvent(
                     sequence=self._sequence,
                     emitted_at=now,
                     site=message.site,
-                    resume_state=freeze_state(message.state),
+                    progress=message.progress,
                     message=message.message,
                 )
             elif message.type is _MessageType.WARNING:
@@ -711,12 +713,20 @@ class SearchStream(Iterator[SearchEvent]):
                     emitted_count=message.emitted_count,
                     resume_state=freeze_state(message.state),
                 )
-            self._remember(stream_event)
+            self._remember(stream_event, resume_state=message.state)
             return stream_event
 
-    def _remember(self, event: SearchEvent) -> None:
+    def _remember(
+        self,
+        event: SearchEvent,
+        *,
+        resume_state: Mapping[str, Any] | None = None,
+    ) -> None:
         self._last_delivered = event
         self._last_acknowledged = False
+        self._last_resume_state = (
+            freeze_state(resume_state) if resume_state is not None else None
+        )
 
     def ack(self, event: SearchEvent | None = None) -> None:
         event = event or self._last_delivered
@@ -748,9 +758,16 @@ class SearchStream(Iterator[SearchEvent]):
             emitted_count = existing.emitted_count + (
                 1 if new_seen_job_key is not None else 0
             )
+            event_resume_state = (
+                self._last_resume_state
+                if isinstance(event, ProgressEvent)
+                else event.resume_state
+            )
+            if event_resume_state is None:
+                raise RuntimeError("Adapter event is missing private resume state")
             adapters[event.site.value] = existing.model_copy(
                 update={
-                    "state": thaw_state(event.resume_state),
+                    "state": thaw_state(event_resume_state),
                     "seen_job_keys": (
                         existing.seen_job_keys
                         if incremental_store is not None

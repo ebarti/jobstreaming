@@ -105,7 +105,10 @@ class BaytScraper(Scraper):
             raw_seen = page_raw_start + len(job_elements)
             context.emit_progress(
                 {"page": page + 1, "page_skip": 0, "raw_seen": raw_seen},
-                f"completed Bayt page {page}",
+                completed_units=page,
+                raw_items_seen=raw_seen,
+                has_more=None,
+                message=f"completed Bayt page {page}",
             )
             if not context.should_continue:
                 break

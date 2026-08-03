@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TypeVar, cast
 
-from jobstreaming.events import AdapterCheckpoint, freeze_state, thaw_state
+from jobstreaming.events import (
+    AdapterCheckpoint,
+    ProgressPhase,
+    ProgressUnit,
+    ProviderProgress,
+    freeze_state,
+    thaw_state,
+)
 from jobstreaming.exception import ErrorCode, StreamCancelledError
 from jobstreaming.model import AdapterIdentifier, JobPost, SearchRequest
 from jobstreaming.result import normalize_job
@@ -38,6 +45,7 @@ class _AdapterMessage:
     retry_after: float | None = None
     reset_checkpoint: bool = False
     emitted_count: int = 0
+    progress: ProviderProgress | None = None
 
 
 MessageSink = Callable[[_AdapterMessage], bool]
@@ -297,11 +305,29 @@ class ScrapeContext:
         return True
 
     def emit_progress(
-        self, resume_state: dict[str, Any], message: str | None = None
+        self,
+        resume_state: dict[str, Any],
+        *,
+        completed_units: int,
+        raw_items_seen: int | None,
+        has_more: bool | None,
+        message: str | None = None,
+        phase: ProgressPhase = ProgressPhase.SEARCH,
+        unit: ProgressUnit = ProgressUnit.PAGE,
+        total_units: int | None = None,
     ) -> None:
         with self._lock:
             self._state = thaw_state(freeze_state(resume_state))
             state = thaw_state(freeze_state(self._state))
+            progress = ProviderProgress(
+                phase=phase,
+                unit=unit,
+                completed_units=completed_units,
+                total_units=total_units,
+                raw_items_seen=raw_items_seen,
+                jobs_emitted=len(self._seen),
+                has_more=has_more,
+            )
         if self._sink is not None and not self.cancelled:
             self._sink(
                 _AdapterMessage(
@@ -310,6 +336,7 @@ class ScrapeContext:
                     state=state,
                     message=message,
                     emitted_count=self.emitted_count,
+                    progress=progress,
                 )
             )
 

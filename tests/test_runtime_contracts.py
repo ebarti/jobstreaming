@@ -59,7 +59,12 @@ class _TwoJobAdapter(Scraper):
             job = _job(number)
             if context.emit_job(job, {"page": 1}):
                 emitted.append(job)
-        context.emit_progress({"page": 2})
+        context.emit_progress(
+            {"page": 2},
+            completed_units=1,
+            raw_items_seen=2,
+            has_more=False,
+        )
         return JobResponse(jobs=emitted)
 
 

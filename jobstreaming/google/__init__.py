@@ -134,7 +134,10 @@ class Google(Scraper):
                     "page_skip": 0,
                     "raw_seen": raw_seen,
                 },
-                f"completed Google page {page}",
+                completed_units=page,
+                raw_items_seen=raw_seen,
+                has_more=next_cursor is not None,
+                message=f"completed Google page {page}",
             )
             if not next_cursor or not jobs:
                 break

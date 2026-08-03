@@ -7,6 +7,10 @@ from jobstreaming import (
     AdapterId,
     JobResponse,
     NoResume,
+    ProgressEvent,
+    ProgressPhase,
+    ProgressUnit,
+    ProviderProgress,
     ScrapeContext,
     SearchFilter,
     SearchRequest,
@@ -39,3 +43,12 @@ class TypedFixtureAdapter:
 
 factory: AdapterFactory = TypedFixtureAdapter
 adapter: Adapter = factory()
+progress: ProviderProgress = ProviderProgress(
+    phase=ProgressPhase.SEARCH,
+    unit=ProgressUnit.PAGE,
+    completed_units=1,
+    raw_items_seen=None,
+    jobs_emitted=0,
+    has_more=None,
+)
+progress_event: ProgressEvent

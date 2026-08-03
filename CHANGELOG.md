@@ -30,6 +30,8 @@ still change when upstream boards drift.
   DataFrame compatibility API.
 - Explicit conservative description-salary inference with multilingual interval and
   currency parsing plus typed provenance and confidence metadata.
+- Immutable, normalized `ProviderProgress` payloads with typed phases/units,
+  cumulative provider counts, explicit unknown totals, and tri-state continuation.
 
 ### Changed
 
@@ -57,6 +59,9 @@ still change when upstream boards drift.
   and batch rows expose flattened salary provenance fields.
 - PyPI releases use a separated, least-privilege Trusted Publishing job with
   attestations enabled.
+- `ProgressEvent` now exposes client-safe provider progress while keeping opaque
+  cursors and adapter resume state private; acknowledging the event still commits the
+  same durable restart boundary.
 
 ### Fixed
 

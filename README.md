@@ -181,7 +181,8 @@ Checkpointing is opt-in. Pass either `checkpoint_path` or a custom `CheckpointSt
   delivery is possible.
 - Acknowledged jobs are deduplicated with stable, process-independent keys.
 - Page and cursor state advances only after the corresponding progress event is
-  acknowledged.
+  acknowledged. Provider cursors remain private to the stream/checkpoint runtime;
+  consumers receive normalized `ProviderProgress` facts instead.
 - Only failures classified as `transient_network` or `rate_limited` are retried by
   default. Configure `max_retries` and `retry_backoff` on `stream_search` or
   `scrape_jobs`. `max_retries` means coordinator retries after the initial adapter
@@ -376,6 +377,25 @@ The batch schema exposes flattened `salary_source`, `salary_confidence`, and
 | `SiteCompleteEvent` | One site exhausted its work or reached its result limit. |
 | `SearchCompleteEvent` | Every worker stopped. `completed=False` means at least one site failed. |
 
+`ProgressEvent.site` identifies the source. Its immutable `progress` payload is a
+client-safe `ProviderProgress` value with these fields:
+
+| Field | Meaning |
+|---|---|
+| `phase` | Stable provider workflow phase. Built-in adapters currently emit `search`. |
+| `unit` | Unit being completed. Built-in adapters currently emit `page`. |
+| `completed_units` | Cumulative completed units for this resumable provider search. |
+| `total_units` | Authoritative provider total, or `None` when the provider does not supply one. |
+| `raw_items_seen` | Cumulative provider listings observed, or `None` when unavailable. |
+| `jobs_emitted` | Cumulative normalized jobs emitted by this provider search. |
+| `has_more` | `True` or `False` when the provider makes continuation known; `None` when unknown. |
+
+Opaque cursors, continuation tokens, and adapter resume dictionaries are deliberately
+absent from `ProgressEvent`. Acknowledging the event still commits its private resume
+state, so it remains the same durable restart boundary. Do not derive a percentage
+unless `total_units` is present, and keep application/business counters separate from
+these provider traversal facts.
+
 `ErrorEvent.code` is a stable `ErrorCode` value. `retryable` tells an operator whether
 the same board operation can be retried, while `reset_checkpoint` tells them whether
 the board cursor should be discarded first. `retry_after` preserves a valid, bounded
@@ -525,8 +545,25 @@ class InternalJobs(Scraper):
         self.session = self.track_transport(make_internal_session())
 
     def scrape(self, request, context=None):
-        for job in fetch_internal_jobs(request):
-            context.emit_job(job, {"cursor": job.id})
+        state = context.resume_state
+        cursor = state.get("cursor")
+        pages_completed = int(state.get("pages_completed", 0))
+        raw_items_seen = int(state.get("raw_items_seen", 0))
+
+        jobs, next_cursor = fetch_internal_page(request, cursor)
+        for job in jobs:
+            context.emit_job(job, state)
+        raw_items_seen += len(jobs)
+        context.emit_progress(
+            {
+                "cursor": next_cursor,
+                "pages_completed": pages_completed + 1,
+                "raw_items_seen": raw_items_seen,
+            },
+            completed_units=pages_completed + 1,
+            raw_items_seen=raw_items_seen,
+            has_more=next_cursor is not None,
+        )
         return JobResponse()
 
 registry = AdapterRegistry()
@@ -548,6 +585,11 @@ serialized as strings in requests/events/checkpoints, and must not collide with 
 built-in `Site`. Resume granularities are also open to third-party values; spaces and
 hyphens normalize to underscores, so the legacy `"continuation token"` value becomes
 `ResumeGranularity("continuation_token")`.
+
+The first argument to `emit_progress()` is private checkpoint state. The keyword
+arguments are the normalized public contract. Supply `None` for an unavailable raw
+count or continuation fact, and leave `total_units` unset unless the provider returns
+an authoritative total.
 
 Register every closeable client/session with `track_transport()`, including sessions
 created lazily or inside detail-worker threads. The base `Scraper.close()` closes each
