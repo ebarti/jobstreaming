@@ -62,6 +62,9 @@ still change when upstream boards drift.
 - `ProgressEvent` now exposes client-safe provider progress while keeping opaque
   cursors and adapter resume state private; acknowledging the event still commits the
   same durable restart boundary.
+- Static SDK and core-runtime checks now use pinned Pyrefly instead of mypy, and the
+  `AdapterFactory` protocol reflects that class-level capability declarations are
+  optional until the first adapter instance is validated.
 
 ### Fixed
 

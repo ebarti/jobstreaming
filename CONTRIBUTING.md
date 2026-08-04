@@ -13,7 +13,7 @@ poetry check --lock
 poetry run pytest --cov
 poetry run python scripts/check_coverage.py
 poetry run ruff check jobstreaming tests scripts
-poetry run mypy
+poetry run pyrefly check
 poetry run black --check jobstreaming tests scripts
 poetry build
 python scripts/verify_release_artifacts.py \

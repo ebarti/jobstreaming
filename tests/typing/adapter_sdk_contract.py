@@ -18,7 +18,7 @@ from jobstreaming import (
 
 
 class TypedFixtureAdapter:
-    capabilities = AdapterCapabilities(
+    capabilities: AdapterCapabilities = AdapterCapabilities(
         filters=frozenset({SearchFilter.SEARCH_TERM}),
         resume=NoResume(),
     )
@@ -41,6 +41,7 @@ class TypedFixtureAdapter:
         return JobResponse()
 
 
+typed_adapter: Adapter = TypedFixtureAdapter()
 factory: AdapterFactory = TypedFixtureAdapter
 adapter: Adapter = factory()
 progress: ProviderProgress = ProviderProgress(
