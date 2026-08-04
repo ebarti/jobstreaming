@@ -12,6 +12,9 @@ from jobstreaming import (
     JobEvent,
     JobPost,
     MemoryCheckpointStore,
+    ProgressEvent,
+    ProgressPhase,
+    ProgressUnit,
     SearchCheckpoint,
     SearchCompleteEvent,
     SearchRequest,
@@ -43,7 +46,7 @@ def _indeed_factory(instances: list[int]):
         def _scrape_page(self, cursor):
             number = 1 if cursor is None else 2
             next_cursor = "indeed-page-2" if number == 1 else None
-            return [_job(Site.INDEED, number)], next_cursor
+            return [_job(Site.INDEED, number)], next_cursor, 1
 
     return ReplayIndeed
 
@@ -107,7 +110,7 @@ def _ziprecruiter_factory(instances: list[int]):
             job = _job(Site.ZIP_RECRUITER, number)
             emitted = [job] if context.emit_job(job, page_state) else []
             next_token = "zip-page-2" if number == 1 else None
-            return emitted, next_token, skipped
+            return emitted, next_token, skipped, 1
 
     return ReplayZipRecruiter
 
@@ -150,6 +153,33 @@ BOARDS = [
     pytest.param(Site.ZIP_RECRUITER, _ziprecruiter_factory, id="ziprecruiter"),
     pytest.param(Site.GLASSDOOR, _glassdoor_factory, id="glassdoor"),
 ]
+
+
+@pytest.mark.parametrize(("site", "build_factory"), BOARDS)
+def test_production_boards_emit_normalized_cursor_free_progress(
+    site: Site,
+    build_factory: FactoryBuilder,
+) -> None:
+    instances: list[int] = []
+    request = _request(site)
+    registry = _registry(site, build_factory(instances))
+
+    with stream_search(request, registry=registry) as stream:
+        progress_events = [
+            event for event in stream if isinstance(event, ProgressEvent)
+        ]
+
+    assert [event.progress.completed_units for event in progress_events] == [1, 2]
+    assert [event.progress.raw_items_seen for event in progress_events] == [1, 2]
+    assert [event.progress.jobs_emitted for event in progress_events] == [1, 2]
+    assert all(event.site is site for event in progress_events)
+    assert all(
+        event.progress.phase is ProgressPhase.SEARCH for event in progress_events
+    )
+    assert all(event.progress.unit is ProgressUnit.PAGE for event in progress_events)
+    assert all(not hasattr(event, "resume_state") for event in progress_events)
+    expected_has_more = [None, None] if site is Site.LINKEDIN else [True, False]
+    assert [event.progress.has_more for event in progress_events] == expected_has_more
 
 
 def _request(site: Site) -> SearchRequest:

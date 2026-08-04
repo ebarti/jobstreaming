@@ -80,8 +80,8 @@ def test_one_shot_cancellation_callback_is_latched() -> None:
     )
     delivered = []
     with pytest.raises(StreamCancelledError):
-        while True:
-            delivered.append(next(stream))
+        for event in stream:
+            delivered.append(event)
 
     assert adapter_runs == 0
     assert not any(

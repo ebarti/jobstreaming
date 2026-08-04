@@ -130,6 +130,12 @@ class LinkedIn(Scraper):
         pages_completed = int(
             resume_state.get("pages_completed", resume_state.get("request_count", 0))
         )
+        saved_raw_seen = resume_state.get("raw_seen")
+        raw_seen = (
+            int(saved_raw_seen)
+            if saved_raw_seen is not None
+            else (0 if pages_completed == 0 else None)
+        )
         seconds_old = (
             scraper_input.hours_old * 3600 if scraper_input.hours_old else None
         )
@@ -185,7 +191,11 @@ class LinkedIn(Scraper):
             if len(job_cards) == 0:
                 break
 
-            page_state = {"start": start, "pages_completed": pages_completed}
+            page_state = {
+                "start": start,
+                "pages_completed": pages_completed,
+                "raw_seen": raw_seen,
+            }
             for index, job_card in enumerate(job_cards):
                 if start + index < scraper_input.offset:
                     continue
@@ -213,12 +223,17 @@ class LinkedIn(Scraper):
                         continue
 
             next_start = start + len(job_cards)
+            raw_seen = raw_seen + len(job_cards) if raw_seen is not None else None
             context.emit_progress(
                 {
                     "start": next_start,
                     "pages_completed": pages_completed + 1,
+                    "raw_seen": raw_seen,
                 },
-                f"completed LinkedIn page at offset {start}",
+                completed_units=pages_completed + 1,
+                raw_items_seen=raw_seen,
+                has_more=None,
+                message=f"completed LinkedIn page at offset {start}",
             )
             pages_completed += 1
             start = next_start

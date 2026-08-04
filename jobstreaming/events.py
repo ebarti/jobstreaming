@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Any, TypeAlias, cast
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from jobstreaming.exception import ErrorCode
 from jobstreaming.model import (
@@ -63,6 +63,38 @@ class EventType(str, Enum):
     SEARCH_COMPLETE = "search_complete"
 
 
+class ProgressPhase(str, Enum):
+    """Stable provider workflow phase exposed to stream consumers."""
+
+    SEARCH = "search"
+
+
+class ProgressUnit(str, Enum):
+    """Client-safe unit used to measure provider progress."""
+
+    PAGE = "page"
+
+
+class ProviderProgress(FrozenModel):
+    """Normalized, cursor-free progress for one provider search."""
+
+    phase: ProgressPhase
+    unit: ProgressUnit
+    completed_units: int = Field(ge=0)
+    total_units: int | None = Field(default=None, ge=0)
+    raw_items_seen: int | None = Field(default=None, ge=0)
+    jobs_emitted: int = Field(ge=0)
+    has_more: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_cumulative_counts(self) -> ProviderProgress:
+        if self.total_units is not None and self.completed_units > self.total_units:
+            raise ValueError("completed_units cannot exceed total_units")
+        if self.raw_items_seen is not None and self.jobs_emitted > self.raw_items_seen:
+            raise ValueError("jobs_emitted cannot exceed raw_items_seen")
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class JobEvent:
     sequence: int
@@ -79,7 +111,7 @@ class ProgressEvent:
     sequence: int
     emitted_at: datetime
     site: AdapterIdentifier
-    resume_state: Mapping[str, Any]
+    progress: ProviderProgress
     message: str | None = None
     type: EventType = EventType.PROGRESS
 

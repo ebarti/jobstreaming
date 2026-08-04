@@ -29,8 +29,6 @@ class Adapter(Protocol):
 
 
 class AdapterFactory(Protocol):
-    capabilities: AdapterCapabilities
-
     def __call__(
         self,
         proxies: list[str] | str | None = None,

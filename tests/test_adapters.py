@@ -240,7 +240,7 @@ def test_ziprecruiter_follows_continuations_until_the_result_limit(
         assert job is not None
         context.emit_job(job, page_state)
         next_token = str(number + 1) if number < 3 else None
-        return [job], next_token, skipped
+        return [job], next_token, skipped, 1
 
     monkeypatch.setattr(scraper, "_find_jobs_in_page", page)
     response = scraper.scrape(
@@ -409,7 +409,7 @@ def test_ziprecruiter_releases_detail_sessions_after_each_page(monkeypatch) -> N
     jobs = []
     skipped = 0
     for current_page in range(1, 41):
-        page_jobs, _, skipped = scraper._find_jobs_in_page(
+        page_jobs, _, skipped, raw_count = scraper._find_jobs_in_page(
             request,
             context,
             None,
@@ -417,6 +417,7 @@ def test_ziprecruiter_releases_detail_sessions_after_each_page(monkeypatch) -> N
             {"page": current_page},
         )
         jobs.extend(page_jobs)
+        assert raw_count == 8
         assert scraper.tracked_transport_count == 1
         assert all(session.closed for session in detail_sessions)
 

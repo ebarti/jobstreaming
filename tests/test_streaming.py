@@ -146,7 +146,13 @@ def test_acknowledged_jobs_are_not_reemitted_after_restart() -> None:
             for index, job in enumerate(jobs):
                 if context.emit_job(job, {"page": 1, "index": index}):
                     emitted.append(job)
-            context.emit_progress({"page": 2}, "page complete")
+            context.emit_progress(
+                {"page": 2},
+                completed_units=1,
+                raw_items_seen=2,
+                has_more=False,
+                message="page complete",
+            )
             return JobResponse(jobs=emitted)
 
     registry = AdapterRegistry()

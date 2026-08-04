@@ -13,6 +13,9 @@ from jobstreaming import (
     JobResponse,
     JsonFileCheckpointStore,
     MemoryCheckpointStore,
+    ProgressEvent,
+    ProgressPhase,
+    ProgressUnit,
     Scraper,
     SearchCheckpoint,
     SearchCompleteEvent,
@@ -42,7 +45,12 @@ class _RestartableAdapter(Scraper):
             job = _job(index)
             if context.emit_job(job, {"page": 1, "index": index}):
                 emitted.append(job)
-        context.emit_progress({"page": 2})
+        context.emit_progress(
+            {"page": 2},
+            completed_units=1,
+            raw_items_seen=3,
+            has_more=False,
+        )
         return JobResponse(jobs=emitted)
 
 
@@ -316,3 +324,57 @@ def test_ack_rejects_a_reconstructed_event_with_the_same_sequence() -> None:
 
     stream.ack(event)
     stream.close()
+
+
+def test_progress_ack_persists_private_resume_state_at_the_restart_boundary() -> None:
+    class ProgressOnlyAdapter(Scraper):
+        def __init__(self, **_: object) -> None:
+            super().__init__(Site.INDEED)
+
+        def scrape(self, request, context=None) -> JobResponse:
+            assert context is not None
+            context.emit_progress(
+                {"cursor": "opaque-provider-token", "page": 2},
+                completed_units=1,
+                raw_items_seen=25,
+                has_more=True,
+                message="page complete",
+            )
+            return JobResponse()
+
+    request = SearchRequest(site_type=(Site.INDEED,))
+    store = MemoryCheckpointStore()
+    stream = stream_search(
+        request,
+        registry=_registry(ProgressOnlyAdapter),
+        checkpoint_store=store,
+        ack_mode="explicit",
+    )
+
+    event = next(stream)
+
+    assert isinstance(event, ProgressEvent)
+    assert event.site is Site.INDEED
+    assert not hasattr(event, "resume_state")
+    assert "opaque-provider-token" not in repr(event)
+    assert event.progress.phase is ProgressPhase.SEARCH
+    assert event.progress.unit is ProgressUnit.PAGE
+    assert event.progress.completed_units == 1
+    assert event.progress.total_units is None
+    assert event.progress.raw_items_seen == 25
+    assert event.progress.jobs_emitted == 0
+    assert event.progress.has_more is True
+
+    before_ack = store.load()
+    assert before_ack is not None
+    assert before_ack.adapters[Site.INDEED.value].state == {}
+
+    stream.ack(event)
+    stream.close()
+
+    checkpoint = store.load()
+    assert checkpoint is not None
+    assert checkpoint.adapters[Site.INDEED.value].state == {
+        "cursor": "opaque-provider-token",
+        "page": 2,
+    }
