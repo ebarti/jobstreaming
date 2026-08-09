@@ -117,6 +117,12 @@ class Indeed(Scraper):
         cursor = state.get("cursor")
         page = int(state.get("page", 1))
         skipped = int(state.get("skipped", 0))
+        saved_raw_seen = state.get("raw_seen")
+        raw_seen = (
+            int(saved_raw_seen)
+            if saved_raw_seen is not None
+            else (0 if page == 1 else None)
+        )
         job_list: list[JobPost] = []
 
         mutually_exclusive = sum(
@@ -137,8 +143,13 @@ class Indeed(Scraper):
             log.info(
                 f"search page: {page} / {math.ceil(scraper_input.results_wanted / self.jobs_per_page)}"
             )
-            page_state = {"cursor": cursor, "page": page, "skipped": skipped}
-            jobs, cursor = self._scrape_page(cursor)
+            page_state = {
+                "cursor": cursor,
+                "page": page,
+                "skipped": skipped,
+                "raw_seen": raw_seen,
+            }
+            jobs, cursor, raw_count = self._scrape_page(cursor)
             if not jobs:
                 log.info(f"found no jobs on page: {page}")
                 break
@@ -152,16 +163,25 @@ class Indeed(Scraper):
                     job_list.append(job)
                 if not context.should_continue:
                     break
+            raw_seen = raw_seen + raw_count if raw_seen is not None else None
             context.emit_progress(
-                {"cursor": cursor, "page": page + 1, "skipped": skipped},
-                f"completed Indeed page {page}",
+                {
+                    "cursor": cursor,
+                    "page": page + 1,
+                    "skipped": skipped,
+                    "raw_seen": raw_seen,
+                },
+                completed_units=page,
+                raw_items_seen=raw_seen,
+                has_more=cursor is not None,
+                message=f"completed Indeed page {page}",
             )
             if not cursor:
                 break
             page += 1
         return JobResponse(jobs=job_list)
 
-    def _scrape_page(self, cursor: str | None) -> tuple[list[JobPost], str | None]:
+    def _scrape_page(self, cursor: str | None) -> tuple[list[JobPost], str | None, int]:
         """
         Scrapes a page of Indeed for jobs with scraper_input criteria
         :param cursor:
@@ -223,7 +243,7 @@ class Indeed(Scraper):
                     "Skipped malformed Indeed listing: " f"{type(exc).__name__}: {exc}"
                 )
 
-        return job_list, new_cursor
+        return job_list, new_cursor, len(jobs)
 
     def _build_filters(self):
         """

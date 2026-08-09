@@ -34,7 +34,7 @@ jobs:
           poetry run pytest --cov --cov-report=term-missing
           poetry run python scripts/check_coverage.py
           poetry run ruff check jobstreaming tests scripts
-          poetry run mypy
+          poetry run pyrefly check
           poetry run black --check jobstreaming tests scripts
 
       - name: Verify release commit belongs to main
@@ -63,12 +63,15 @@ jobs:
 
           streaming_consumer="${RUNNER_TEMP}/jobstreaming-streaming-consumer"
           python -m venv "$streaming_consumer"
-          "$streaming_consumer/bin/python" -m pip install --disable-pip-version-check mypy==1.15.0 "${wheel[0]}"
+          "$streaming_consumer/bin/python" -m pip install --disable-pip-version-check pyrefly==1.1.1 "${wheel[0]}"
           "$streaming_consumer/bin/python" -m pip check
           cd "$RUNNER_TEMP"
           "$streaming_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_streaming_install.py"
           "$streaming_consumer/bin/python" "${GITHUB_WORKSPACE}/scripts/verify_sdk_install.py"
-          "$streaming_consumer/bin/python" -m mypy --strict "${GITHUB_WORKSPACE}/scripts/verify_streaming_typing.py"
+          "$streaming_consumer/bin/pyrefly" check \
+            --config "${GITHUB_WORKSPACE}/pyproject.toml" \
+            --python-interpreter-path "$streaming_consumer/bin/python" \
+            "${GITHUB_WORKSPACE}/scripts/verify_streaming_typing.py"
 
           batch_consumer="${RUNNER_TEMP}/jobstreaming-batch-consumer"
           python -m venv "$batch_consumer"

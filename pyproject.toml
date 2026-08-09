@@ -82,12 +82,11 @@ source = ["jobstreaming"]
 show_missing = true
 skip_covered = true
 
-[tool.mypy]
-python_version = "3.10"
+[tool.pyrefly]
+python-version = "3.10"
 # Keep the published SDK/core gate focused on the files below while still following
 # built-in adapter imports for type information.
-follow_imports = "silent"
-files = [
+project-includes = [
     "jobstreaming/__init__.py",
     "jobstreaming/model.py",
     "jobstreaming/protocols.py",
@@ -104,19 +103,13 @@ files = [
     "jobstreaming/salary.py",
     "tests/typing/adapter_sdk_contract.py",
 ]
-ignore_missing_imports = true
-check_untyped_defs = true
-disallow_any_generics = true
-no_implicit_optional = true
-strict_equality = true
-warn_return_any = true
-warn_unused_ignores = true
-warn_unused_configs = true
+check-unannotated-defs = true
+infer-return-types = "never"
 
 [tool.poetry.group.dev.dependencies]
 black = ">=24.0"
-mypy = ">=1.15"
 pre-commit = ">=4.6.1"
+pyrefly = "1.1.1"
 pytest = ">=8.0"
 pytest-cov = ">=6.0"
 ruff = ">=0.16.0"

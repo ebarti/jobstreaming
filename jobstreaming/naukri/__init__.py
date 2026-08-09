@@ -174,7 +174,10 @@ class Naukri(Scraper):
                     "raw_seen": raw_seen,
                     "pages_fetched": pages_fetched + 1,
                 },
-                f"completed Naukri page {page}",
+                completed_units=pages_fetched + 1,
+                raw_items_seen=raw_seen,
+                has_more=(False if len(job_details) < self.jobs_per_page else None),
+                message=f"completed Naukri page {page}",
             )
             pages_fetched += 1
             if not context.should_continue or len(job_details) < self.jobs_per_page:

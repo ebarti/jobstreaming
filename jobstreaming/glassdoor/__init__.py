@@ -126,6 +126,12 @@ class Glassdoor(Scraper):
         page = int(state.get("page", initial_page))
         cursor = state.get("cursor")
         pages_fetched = int(state.get("pages_fetched", max(0, page - initial_page)))
+        saved_raw_seen = state.get("raw_seen")
+        raw_seen = (
+            int(saved_raw_seen)
+            if saved_raw_seen is not None
+            else (0 if pages_fetched == 0 else None)
+        )
         page_budget = min(scraper_input.max_pages, self.max_pages)
         while (
             context.should_continue
@@ -137,6 +143,7 @@ class Glassdoor(Scraper):
                 "page": page,
                 "cursor": cursor,
                 "pages_fetched": pages_fetched,
+                "raw_seen": raw_seen,
             }
             jobs, next_cursor, raw_count = self._fetch_jobs_page(
                 scraper_input,
@@ -148,13 +155,18 @@ class Glassdoor(Scraper):
                 page_state,
             )
             job_list.extend(jobs)
+            raw_seen = raw_seen + raw_count if raw_seen is not None else None
             context.emit_progress(
                 {
                     "page": page + 1,
                     "cursor": next_cursor,
                     "pages_fetched": pages_fetched + 1,
+                    "raw_seen": raw_seen,
                 },
-                f"completed Glassdoor page {page}",
+                completed_units=pages_fetched + 1,
+                raw_items_seen=raw_seen,
+                has_more=next_cursor is not None,
+                message=f"completed Glassdoor page {page}",
             )
             pages_fetched += 1
             if raw_count == 0 or not next_cursor:
