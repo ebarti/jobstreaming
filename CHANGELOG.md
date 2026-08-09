@@ -4,7 +4,7 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
-## [0.0.3] - Unreleased
+## [0.0.3] - 2026-08-09
 
 ### Added
 
@@ -93,5 +93,5 @@ still change when upstream boards drift.
   contracts.
 - Added Python 3.10 through 3.14 CI coverage and pinned release automation.
 
-[0.0.3]: https://github.com/ebarti/jobstreaming/compare/v0.0.2...HEAD
+[0.0.3]: https://github.com/ebarti/jobstreaming/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/ebarti/jobstreaming/releases/tag/v0.0.2
