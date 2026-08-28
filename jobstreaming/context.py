@@ -265,7 +265,12 @@ class ScrapeContext:
         raise StreamCancelledError("Search stream was cancelled")
 
     def already_seen(self, job: JobPost) -> bool:
-        key = stable_job_key(self.site.value, job.id or job.job_url)
+        return self.already_seen_identity(job.id or job.job_url)
+
+    def already_seen_identity(self, identity: str) -> bool:
+        """Check a provider identity before constructing or enriching a job."""
+
+        key = stable_job_key(self.site.value, identity)
         with self._lock:
             return key in self._seen
 

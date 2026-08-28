@@ -157,6 +157,23 @@ def test_adapter_test_kit_runs_an_offline_resume_fixture() -> None:
     assert run.context.resume_state == {"listing": 8}
 
 
+def test_context_can_check_a_stable_identity_before_job_construction() -> None:
+    request = SearchRequest(site_type=(CUSTOM_ID,), results_wanted=2)
+    context = AdapterTestKit.context(request, identifier=CUSTOM_ID)
+    job = JobPost(
+        id="acme-1",
+        title="Fixture job",
+        job_url="https://example.test/acme/1",
+    )
+
+    assert context.already_seen_identity("acme-1") is False
+
+    assert context.emit_job(job) is True
+
+    assert context.already_seen_identity("acme-1") is True
+    assert context.already_seen(job) is True
+
+
 def test_adapter_test_kit_reports_identifier_mismatches() -> None:
     with pytest.raises(AdapterContractViolation, match="produced acme.jobs"):
         AdapterTestKit.assert_conforms(AdapterId("other.jobs"), FixtureAdapter)

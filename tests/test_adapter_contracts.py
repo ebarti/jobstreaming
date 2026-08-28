@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from jobstreaming import (
     AdapterCapabilities,
+    AdapterCheckpoint,
     AdapterTestKit,
     CompensationInterval,
     Country,
@@ -22,6 +23,8 @@ from jobstreaming.bdjobs import BDJobs
 from jobstreaming.exception import CursorExpiredError
 from jobstreaming.glassdoor import Glassdoor
 from jobstreaming.google import Google
+from jobstreaming.linkedin import LinkedIn
+from jobstreaming.util import stable_job_key
 
 FIXTURES = Path(__file__).with_name("fixtures")
 
@@ -77,6 +80,20 @@ class _Response:
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def _linkedin_cards(*numbers: int) -> str:
+    return "".join(f"""
+        <div class="base-search-card">
+          <a class="base-card__full-link"
+             href="https://www.linkedin.com/jobs/view/fixture-job-{number}"></a>
+          <span class="sr-only">Engineer {number}</span>
+          <h4 class="base-search-card__subtitle">Fixture Company</h4>
+          <div class="base-search-card__metadata">
+            <span class="job-search-card__location">Madrid, Spain</span>
+          </div>
+        </div>
+        """ for number in numbers)
 
 
 def test_bdjobs_offline_fixture_covers_filters_parsing_and_pagination(
@@ -249,6 +266,153 @@ def test_google_continuation_failure_is_classified_as_cursor_expiry() -> None:
         scraper._get_jobs_next_page("expired")
 
     assert raised.value.reset_checkpoint is True
+
+
+def test_linkedin_partial_page_stops_without_waiting_or_requesting_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_starts: list[int] = []
+    waits: list[float] = []
+    progress_has_more: list[bool | None] = []
+
+    cards = _linkedin_cards(*range(3))
+
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, params, timeout):
+            del url, timeout
+            requested_starts.append(int(params["start"]))
+            if len(requested_starts) > 1:
+                pytest.fail("a partial LinkedIn page must be terminal")
+            return _Response(text=cards)
+
+    request = SearchRequest(
+        site_type=(Site.LINKEDIN,),
+        search_term="engineer",
+        location="Madrid",
+        results_wanted=20,
+        max_pages=5,
+    )
+
+    def capture_progress(message) -> bool:
+        if message.progress is not None:
+            progress_has_more.append(message.progress.has_more)
+        return True
+
+    context = ScrapeContext(
+        site=Site.LINKEDIN,
+        request=request,
+        sink=capture_progress,
+    )
+    monkeypatch.setattr(
+        context,
+        "wait",
+        lambda seconds: waits.append(seconds) or True,
+    )
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+
+    response = scraper.scrape(request, context=context)
+
+    assert requested_starts == [0]
+    assert waits == []
+    assert progress_has_more == [False]
+    assert [job.id for job in response.jobs] == ["li-0", "li-1", "li-2"]
+    assert context.resume_state == {
+        "start": 3,
+        "pages_completed": 1,
+        "raw_seen": 3,
+    }
+
+
+def test_linkedin_uses_randomized_one_to_two_second_page_pacing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_starts: list[int] = []
+    uniform_bounds: list[tuple[float, float]] = []
+    waits: list[float] = []
+
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, params, timeout):
+            del url, timeout
+            requested_starts.append(int(params["start"]))
+            cards = _linkedin_cards(*range(10)) if len(requested_starts) == 1 else ""
+            return _Response(text=cards)
+
+    def sample_uniform(lower: float, upper: float) -> float:
+        uniform_bounds.append((lower, upper))
+        return 1.25
+
+    request = SearchRequest(
+        site_type=(Site.LINKEDIN,),
+        search_term="engineer",
+        location="Madrid",
+        results_wanted=20,
+        max_pages=2,
+    )
+    context = ScrapeContext(site=Site.LINKEDIN, request=request)
+    monkeypatch.setattr(
+        context,
+        "wait",
+        lambda seconds: waits.append(seconds) or True,
+    )
+    monkeypatch.setattr("jobstreaming.linkedin.random.uniform", sample_uniform)
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+
+    scraper.scrape(request, context=context)
+
+    assert requested_starts == [0, 10]
+    assert uniform_bounds == [(1, 2)]
+    assert waits == [1.25]
+
+
+def test_linkedin_skips_detail_requests_for_resumed_and_same_run_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cards = _linkedin_cards(1, 2, 2, 3)
+
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, params, timeout):
+            del url, params, timeout
+            return _Response(text=cards)
+
+    request = SearchRequest(
+        site_type=(Site.LINKEDIN,),
+        search_term="engineer",
+        location="Madrid",
+        linkedin_fetch_description=True,
+        results_wanted=3,
+        max_pages=1,
+    )
+    context = ScrapeContext(
+        site=Site.LINKEDIN,
+        request=request,
+        checkpoint=AdapterCheckpoint(
+            site=Site.LINKEDIN,
+            seen_job_keys=(stable_job_key(Site.LINKEDIN.value, "li-1"),),
+            emitted_count=1,
+        ),
+    )
+    detail_requests: list[str] = []
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+    monkeypatch.setattr(
+        scraper,
+        "_get_job_details",
+        lambda job_id: detail_requests.append(job_id)
+        or {"description": f"Description {job_id}"},
+    )
+
+    response = scraper.scrape(request, context=context)
+
+    assert detail_requests == ["2", "3"]
+    assert [job.id for job in response.jobs] == ["li-2", "li-3"]
 
 
 def test_glassdoor_offline_fixture_preserves_direct_salary_and_filters(
