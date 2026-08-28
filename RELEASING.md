@@ -16,7 +16,7 @@ Before creating a tag:
 
    ```bash
    python scripts/verify_release_artifacts.py \
-     --expected-version 0.0.3 \
+     --expected-version 0.0.4 \
      --dist-dir dist
    ```
 
@@ -26,7 +26,7 @@ Before creating a tag:
    still target `.github/workflows/release.yml`. This is an external configuration
    check; do not add publisher credentials to the repository.
 
-Create `v0.0.3` only after those checks are complete. Do not move or reuse a published
+Create `v0.0.4` only after those checks are complete. Do not move or reuse a published
 tag.
 
 ## Automated trust chain
@@ -58,7 +58,7 @@ after the build artifact has been produced.
 Download the release assets and verify their checksums:
 
 ```bash
-gh release download v0.0.3 \
+gh release download v0.0.4 \
   --repo ebarti/jobstreaming \
   --pattern "jobstreaming-*" \
   --pattern "SHA256SUMS"
@@ -70,9 +70,9 @@ On macOS, use `shasum -a 256 --check SHA256SUMS` for the checksum step.
 Then verify GitHub provenance for both distributions:
 
 ```bash
-gh attestation verify jobstreaming-0.0.3-py3-none-any.whl \
+gh attestation verify jobstreaming-0.0.4-py3-none-any.whl \
   --repo ebarti/jobstreaming
-gh attestation verify jobstreaming-0.0.3.tar.gz \
+gh attestation verify jobstreaming-0.0.4.tar.gz \
   --repo ebarti/jobstreaming
 ```
 
@@ -81,10 +81,10 @@ Finally, install the wheel into a fresh environment and confirm dependency integ
 ```bash
 python -m venv /tmp/jobstreaming-release-check
 /tmp/jobstreaming-release-check/bin/python -m pip install \
-  jobstreaming-0.0.3-py3-none-any.whl
+  jobstreaming-0.0.4-py3-none-any.whl
 /tmp/jobstreaming-release-check/bin/python -m pip check
 /tmp/jobstreaming-release-check/bin/python -c \
-  'from importlib.metadata import version; assert version("jobstreaming") == "0.0.3"'
+  'from importlib.metadata import version; assert version("jobstreaming") == "0.0.4"'
 ```
 
 PyPI and the GitHub release should contain the same wheel and source-distribution
