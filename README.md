@@ -465,7 +465,7 @@ except StreamCancelledError:
 | Site | Restart boundary | Notes |
 |---|---|---|
 | Indeed | cursor/page | Requires `JOBSTREAMING_INDEED_API_KEY`. `hours_old`, `easy_apply`, and `job_type`/`is_remote` are mutually exclusive in the upstream API. |
-| LinkedIn | result offset/page | Full descriptions require `linkedin_fetch_description=True` and add one request per job. Aggressive rate limiting is common. |
+| LinkedIn | result offset/page | Continuation pages use a randomized 1–2 second gap. Full descriptions require `linkedin_fetch_description=True` and add one request per job. Aggressive rate limiting is common. |
 | ZipRecruiter | continuation token | Requires `JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION`. US and Canada are the primary supported markets. |
 | Glassdoor | page/cursor | Uses live CSRF discovery or explicitly configured fallback. A location is required unless `is_remote=True`. Availability depends on `country_indeed`. |
 | Google Jobs | cursor | `google_search_term` can override the generated query. The upstream response format is opaque and fragile. |
@@ -578,6 +578,12 @@ with stream_search(
     for event in stream:
         ...
 ```
+
+When an adapter must make an expensive detail request after discovering a stable
+provider identity, call `context.already_seen_identity(identity)` first. The identity
+must match the value the resulting `JobPost` will use as `id` (or `job_url` when no ID
+is available). This avoids repeating enrichment for acknowledged jobs when a page is
+replayed while preserving at-least-once delivery for unacknowledged jobs.
 
 Increment `cursor_schema_version` whenever a deployed adapter can no longer interpret
 cursor state written by its previous implementation. Custom identifiers are validated,

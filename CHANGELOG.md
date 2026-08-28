@@ -4,6 +4,19 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
+## [Unreleased]
+
+### Changed
+
+- LinkedIn continuation requests use a measured randomized one-to-two-second delay
+  and the provider's observed ten-card page size for offset calculations.
+
+### Fixed
+
+- LinkedIn stops after a partial terminal page instead of waiting and issuing an
+  empty follow-up request, and skips detail enrichment for stable identities already
+  seen during the current or resumed search.
+
 ## [0.0.3] - 2026-08-09
 
 ### Added
@@ -93,5 +106,6 @@ still change when upstream boards drift.
   contracts.
 - Added Python 3.10 through 3.14 CI coverage and pinned release automation.
 
+[Unreleased]: https://github.com/ebarti/jobstreaming/compare/v0.0.3...HEAD
 [0.0.3]: https://github.com/ebarti/jobstreaming/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/ebarti/jobstreaming/releases/tag/v0.0.2
