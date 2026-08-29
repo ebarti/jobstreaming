@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "jobstreaming"
-version = "0.0.4"
+version = "0.0.5"
 description = "Stream normalized jobs from multiple boards with typed events and durable checkpoints"
 authors = [{ name = "JobStreaming contributors" }]
 license = "MIT"
