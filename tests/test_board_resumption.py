@@ -72,6 +72,7 @@ def _linkedin_factory(instances: list[int]):
     class ReplayLinkedIn(LinkedIn):
         delay = 0
         band_delay = 0
+        jobs_per_page = 1
 
         def __init__(self, **kwargs) -> None:
             super().__init__(**kwargs)

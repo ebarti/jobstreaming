@@ -52,9 +52,11 @@ log = create_logger("LinkedIn")
 
 class LinkedIn(Scraper):
     base_url = "https://www.linkedin.com"
-    delay = 3
-    band_delay = 4
-    jobs_per_page = 25
+    # Keep continuation requests jittered while avoiding a fixed five-second
+    # average gap between otherwise sub-second result-page requests.
+    delay = 1
+    band_delay = 1
+    jobs_per_page = 10
     capabilities = AdapterCapabilities(
         filters=frozenset(
             {
@@ -124,7 +126,12 @@ class LinkedIn(Scraper):
         resume_state = context.resume_state
         start = int(
             resume_state.get(
-                "start", scraper_input.offset // 10 * 10 if scraper_input.offset else 0
+                "start",
+                (
+                    scraper_input.offset // self.jobs_per_page * self.jobs_per_page
+                    if scraper_input.offset
+                    else 0
+                ),
             )
         )
         pages_completed = int(
@@ -144,10 +151,14 @@ class LinkedIn(Scraper):
             and start < 1000
             and pages_completed < scraper_input.max_pages
         ):
-            log.info(
-                f"search page: {pages_completed + 1} / "
-                f"{min(scraper_input.max_pages, math.ceil((scraper_input.results_wanted + scraper_input.offset) / 10))}"
+            total_pages = min(
+                scraper_input.max_pages,
+                math.ceil(
+                    (scraper_input.results_wanted + scraper_input.offset)
+                    / self.jobs_per_page
+                ),
             )
+            log.info(f"search page: {pages_completed + 1} / {total_pages}")
             params = {
                 "keywords": scraper_input.search_term,
                 "location": scraper_input.location,
@@ -208,6 +219,8 @@ class LinkedIn(Scraper):
                     job_id = href.split("-")[-1]
                     if not job_id:
                         continue
+                    if context.already_seen_identity(f"li-{job_id}"):
+                        continue
 
                     try:
                         fetch_desc = scraper_input.linkedin_fetch_description
@@ -224,6 +237,7 @@ class LinkedIn(Scraper):
 
             next_start = start + len(job_cards)
             raw_seen = raw_seen + len(job_cards) if raw_seen is not None else None
+            has_more = None if len(job_cards) >= self.jobs_per_page else False
             context.emit_progress(
                 {
                     "start": next_start,
@@ -232,17 +246,15 @@ class LinkedIn(Scraper):
                 },
                 completed_units=pages_completed + 1,
                 raw_items_seen=raw_seen,
-                has_more=None,
+                has_more=has_more,
                 message=f"completed LinkedIn page at offset {start}",
             )
             pages_completed += 1
             start = next_start
-            if (
-                context.should_continue
-                and pages_completed < scraper_input.max_pages
-                and not context.wait(
-                    random.uniform(self.delay, self.delay + self.band_delay)
-                )
+            if not context.should_continue or has_more is False:
+                break
+            if pages_completed < scraper_input.max_pages and not context.wait(
+                random.uniform(self.delay, self.delay + self.band_delay)
             ):
                 break
 
