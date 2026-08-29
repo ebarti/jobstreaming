@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from requests import exceptions as requests_exceptions
 
 from jobstreaming import (
     AdapterCapabilities,
@@ -22,9 +23,11 @@ from jobstreaming import (
 )
 from jobstreaming.bdjobs import BDJobs
 from jobstreaming.exception import (
+    AuthenticationConfigurationError,
     CursorExpiredError,
     InvalidRequestError,
     RateLimitError,
+    TransientNetworkError,
 )
 from jobstreaming.glassdoor import Glassdoor
 from jobstreaming.google import Google
@@ -529,6 +532,110 @@ def test_linkedin_targeted_detail_requires_a_canonical_job_identity() -> None:
             listing,
             SearchRequest(site_type=(Site.LINKEDIN,)),
         )
+
+
+def test_linkedin_targeted_detail_rejects_conflicting_job_id_and_url() -> None:
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    listing = JobPost(
+        id="li-42",
+        title="Staff Platform Engineer",
+        job_url="https://www.linkedin.com/jobs/view/99",
+    )
+
+    with pytest.raises(InvalidRequestError, match="does not match"):
+        scraper.fetch_job_detail(
+            listing,
+            SearchRequest(site_type=(Site.LINKEDIN,)),
+        )
+
+
+def test_linkedin_targeted_detail_rejects_a_non_linkedin_job_url() -> None:
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    listing = JobPost(
+        id="li-42",
+        title="Staff Platform Engineer",
+        job_url="https://example.test/jobs/view/42",
+    )
+
+    with pytest.raises(InvalidRequestError, match="LinkedIn job URL"):
+        scraper.fetch_job_detail(
+            listing,
+            SearchRequest(site_type=(Site.LINKEDIN,)),
+        )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        requests_exceptions.Timeout("timed out"),
+        requests_exceptions.ConnectionError("connection failed"),
+        requests_exceptions.RetryError("retries exhausted"),
+    ],
+    ids=("timeout", "connection", "retry"),
+)
+def test_linkedin_targeted_detail_translates_retryable_transport_failures(
+    failure: Exception,
+) -> None:
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, timeout):
+            del url, timeout
+            raise failure
+
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+    listing = JobPost(
+        id="li-42",
+        title="Staff Platform Engineer",
+        job_url="https://www.linkedin.com/jobs/view/42",
+    )
+
+    with pytest.raises(TransientNetworkError) as raised:
+        scraper.fetch_job_detail(
+            listing,
+            SearchRequest(site_type=(Site.LINKEDIN,)),
+        )
+
+    assert raised.value.retryable is True
+    assert type(failure).__name__ in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        requests_exceptions.SSLError("certificate failed"),
+        requests_exceptions.ProxyError("proxy failed"),
+        requests_exceptions.InvalidProxyURL("invalid proxy"),
+    ],
+    ids=("tls", "proxy", "invalid-proxy"),
+)
+def test_linkedin_targeted_detail_translates_transport_configuration_failures(
+    failure: Exception,
+) -> None:
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, timeout):
+            del url, timeout
+            raise failure
+
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+    listing = JobPost(
+        id="li-42",
+        title="Staff Platform Engineer",
+        job_url="https://www.linkedin.com/jobs/view/42",
+    )
+
+    with pytest.raises(AuthenticationConfigurationError) as raised:
+        scraper.fetch_job_detail(
+            listing,
+            SearchRequest(site_type=(Site.LINKEDIN,)),
+        )
+
+    assert raised.value.retryable is False
+    assert type(failure).__name__ in str(raised.value)
 
 
 def test_linkedin_search_retains_the_listing_when_detail_fetch_fails() -> None:

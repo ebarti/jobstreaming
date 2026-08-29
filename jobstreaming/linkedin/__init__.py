@@ -8,10 +8,12 @@ from urllib.parse import unquote, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
+from requests import exceptions as requests_exceptions
 
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
     InvalidRequestError,
+    TransientNetworkError,
     error_for_http_status,
 )
 from jobstreaming.linkedin.constant import headers
@@ -442,13 +444,35 @@ class LinkedIn(Scraper):
 
     @staticmethod
     def _targeted_job_id(job: JobPost) -> str:
+        parsed_url = urlparse(job.job_url)
+        host = (parsed_url.hostname or "").casefold()
+        if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+            raise InvalidRequestError(
+                "LinkedIn targeted detail requires a LinkedIn job URL"
+            )
+        url_match = re.fullmatch(
+            r"/jobs/view/(?:[^/]*-)?(\d+)/?",
+            parsed_url.path,
+        )
+        url_job_id = url_match.group(1) if url_match else None
+
+        canonical_job_id = None
         if job.id:
             match = re.fullmatch(r"li-(\d+)", job.id.strip())
             if match:
-                return match.group(1)
-        path_id = urlparse(job.job_url).path.rstrip("/").split("-")[-1]
-        if path_id.isdigit():
-            return path_id
+                canonical_job_id = match.group(1)
+        if (
+            canonical_job_id is not None
+            and url_job_id is not None
+            and canonical_job_id != url_job_id
+        ):
+            raise InvalidRequestError(
+                "LinkedIn targeted detail job id does not match its job URL"
+            )
+        if canonical_job_id is not None:
+            return canonical_job_id
+        if url_job_id is not None:
+            return url_job_id
         raise InvalidRequestError(
             "LinkedIn targeted detail requires a canonical numeric job id"
         )
@@ -458,10 +482,28 @@ class LinkedIn(Scraper):
         job_id: str,
         request: SearchRequest,
     ) -> dict:
-        response = self.session.get(
-            f"{self.base_url}/jobs/view/{job_id}",
-            timeout=request.request_timeout,
-        )
+        try:
+            response = self.session.get(
+                f"{self.base_url}/jobs/view/{job_id}",
+                timeout=request.request_timeout,
+            )
+        except (
+            requests_exceptions.SSLError,
+            requests_exceptions.ProxyError,
+            requests_exceptions.InvalidProxyURL,
+        ) as exc:
+            raise AuthenticationConfigurationError(
+                "LinkedIn detail transport configuration failed: "
+                f"{type(exc).__name__}"
+            ) from exc
+        except (
+            requests_exceptions.Timeout,
+            requests_exceptions.ConnectionError,
+            requests_exceptions.RetryError,
+        ) as exc:
+            raise TransientNetworkError(
+                f"LinkedIn detail request failed: {type(exc).__name__}"
+            ) from exc
         status_code = int(getattr(response, "status_code", 200))
         if status_code not in range(200, 400):
             raise error_for_http_status(
