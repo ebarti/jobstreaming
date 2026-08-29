@@ -73,6 +73,14 @@ class InvalidRequestError(JobStreamingError):
     code = ErrorCode.INVALID_REQUEST
 
 
+class DetailFetchUnsupportedError(InvalidRequestError):
+    """The selected adapter cannot enrich one already-known listing."""
+
+    def __init__(self, site: str) -> None:
+        self.site = site
+        super().__init__(f"{site} does not support targeted job detail fetching")
+
+
 class CursorExpiredError(JobStreamingError):
     code = ErrorCode.CURSOR_EXPIRED
     reset_checkpoint = True

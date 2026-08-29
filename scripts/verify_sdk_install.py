@@ -9,8 +9,11 @@ package_dir = Path(jobstreaming.__file__).parent
 assert (package_dir / "py.typed").is_file()
 
 adapter_hints = get_type_hints(jobstreaming.Adapter.scrape)
+detail_hints = get_type_hints(jobstreaming.JobDetailAdapter.fetch_job_detail)
 stream_hints = get_type_hints(jobstreaming.SearchStream.__init__)
 assert adapter_hints["context"] == jobstreaming.ScrapeContext | None
+assert detail_hints["job"] == jobstreaming.JobPost
+assert detail_hints["return"] == jobstreaming.JobPost | None
 assert stream_hints["registry"] == jobstreaming.AdapterRegistry
 
 request = jobstreaming.SearchRequest(site_type=(jobstreaming.Site.GOOGLE,))

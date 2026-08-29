@@ -8,7 +8,10 @@ from typing import TYPE_CHECKING, Any
 from jobstreaming.checkpoint import CheckpointStore, JsonFileCheckpointStore
 from jobstreaming.collector import collect_jobs
 from jobstreaming.events import ErrorEvent, JobEvent
-from jobstreaming.exception import MissingOptionalDependencyError
+from jobstreaming.exception import (
+    DetailFetchUnsupportedError,
+    MissingOptionalDependencyError,
+)
 from jobstreaming.model import (
     AdapterIdentifier,
     AdapterIdentifierInput,
@@ -22,6 +25,7 @@ from jobstreaming.model import (
     parse_adapter_identifier,
 )
 from jobstreaming.outcome import SearchFailedError
+from jobstreaming.protocols import JobDetailAdapter
 from jobstreaming.registry import AdapterRegistry, default_registry
 from jobstreaming.runtime import AckMode, SearchStream
 from jobstreaming.util import create_logger, set_logger_level
@@ -129,6 +133,62 @@ def build_search_request(
         request_timeout=request_timeout,
         max_pages=max_pages,
     )
+
+
+def fetch_job_detail(
+    site_name: AdapterIdentifierInput,
+    job: JobPost,
+    *,
+    registry: AdapterRegistry | None = None,
+    proxies: list[str] | str | None = None,
+    ca_cert: str | None = None,
+    user_agent: str | None = None,
+    description_format: str | DescriptionFormat = DescriptionFormat.MARKDOWN,
+    request_timeout: float = 30,
+) -> JobPost | None:
+    """Fetch detail for one already-known listing without starting a search.
+
+    ``None`` means the adapter completed the request but the posting did not
+    expose usable detail. Transport and provider failures remain typed
+    ``JobStreamingError`` exceptions. The adapter is always closed before this
+    function returns.
+    """
+
+    site = parse_adapter_identifier(site_name)
+    parsed_format = (
+        DescriptionFormat(description_format)
+        if isinstance(description_format, str)
+        else description_format
+    )
+    request = SearchRequest(
+        site_type=(site,),
+        description_format=parsed_format,
+        request_timeout=request_timeout,
+        results_wanted=1,
+    )
+    selected_registry = registry or default_registry()
+    adapter = selected_registry.create(
+        site,
+        proxies=proxies,
+        ca_cert=ca_cert,
+        user_agent=user_agent,
+    )
+
+    body_failed = True
+    try:
+        if not isinstance(adapter, JobDetailAdapter):
+            raise DetailFetchUnsupportedError(site.value)
+        detailed = adapter.fetch_job_detail(job, request)
+        body_failed = False
+        return detailed
+    finally:
+        close = getattr(adapter, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                if not body_failed:
+                    raise
 
 
 def stream_search(

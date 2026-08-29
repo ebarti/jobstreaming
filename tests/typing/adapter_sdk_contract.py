@@ -5,6 +5,8 @@ from jobstreaming import (
     AdapterCapabilities,
     AdapterFactory,
     AdapterId,
+    JobDetailAdapter,
+    JobPost,
     JobResponse,
     NoResume,
     ProgressEvent,
@@ -40,8 +42,17 @@ class TypedFixtureAdapter:
         del scraper_input, context
         return JobResponse()
 
+    def fetch_job_detail(
+        self,
+        job: JobPost,
+        request: SearchRequest,
+    ) -> JobPost | None:
+        del request
+        return job
+
 
 typed_adapter: Adapter = TypedFixtureAdapter()
+detail_adapter: JobDetailAdapter = TypedFixtureAdapter()
 factory: AdapterFactory = TypedFixtureAdapter
 adapter: Adapter = factory()
 progress: ProviderProgress = ProviderProgress(

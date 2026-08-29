@@ -13,6 +13,7 @@ from jobstreaming import (
     CompensationInterval,
     Country,
     DescriptionFormat,
+    JobPost,
     JobType,
     ScrapeContext,
     SearchRequest,
@@ -20,7 +21,11 @@ from jobstreaming import (
     default_registry,
 )
 from jobstreaming.bdjobs import BDJobs
-from jobstreaming.exception import CursorExpiredError
+from jobstreaming.exception import (
+    CursorExpiredError,
+    InvalidRequestError,
+    RateLimitError,
+)
 from jobstreaming.glassdoor import Glassdoor
 from jobstreaming.google import Google
 from jobstreaming.linkedin import LinkedIn
@@ -413,6 +418,144 @@ def test_linkedin_skips_detail_requests_for_resumed_and_same_run_identities(
 
     assert detail_requests == ["2", "3"]
     assert [job.id for job in response.jobs] == ["li-2", "li-3"]
+
+
+def test_linkedin_targeted_detail_enriches_one_existing_listing() -> None:
+    requested_urls: list[str] = []
+
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, timeout):
+            requested_urls.append(url)
+            assert timeout == 9
+            response = _Response(
+                text="""
+                    <div class="show-more-less-html__markup">
+                      Build reliable systems. Contact hiring@example.test.
+                    </div>
+                """,
+            )
+            response.url = url
+            return response
+
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+    listing = JobPost(
+        id="li-42",
+        title="Staff Platform Engineer",
+        company_name="Acme",
+        job_url="https://www.linkedin.com/jobs/view/42",
+    )
+    request = SearchRequest(
+        site_type=(Site.LINKEDIN,),
+        description_format=DescriptionFormat.PLAIN,
+        request_timeout=9,
+    )
+
+    detailed = scraper.fetch_job_detail(listing, request)
+
+    assert requested_urls == ["https://www.linkedin.com/jobs/view/42"]
+    assert detailed is not None
+    assert detailed.id == listing.id
+    assert detailed.description == (
+        "Build reliable systems. Contact hiring@example.test."
+    )
+    assert detailed.emails == ("hiring@example.test",)
+
+
+def test_linkedin_targeted_detail_returns_none_without_usable_description() -> None:
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, timeout):
+            del timeout
+            response = _Response(text="<html><body>No description</body></html>")
+            response.url = url
+            return response
+
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+    listing = JobPost(
+        id="li-42",
+        title="Staff Platform Engineer",
+        job_url="https://www.linkedin.com/jobs/view/42",
+    )
+
+    detailed = scraper.fetch_job_detail(
+        listing,
+        SearchRequest(site_type=(Site.LINKEDIN,)),
+    )
+
+    assert detailed is None
+
+
+def test_linkedin_targeted_detail_preserves_typed_provider_failures() -> None:
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, timeout):
+            del url, timeout
+            return _Response(status_code=429, headers={"Retry-After": "2"})
+
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+    listing = JobPost(
+        id="li-42",
+        title="Staff Platform Engineer",
+        job_url="https://www.linkedin.com/jobs/view/42",
+    )
+
+    with pytest.raises(RateLimitError) as raised:
+        scraper.fetch_job_detail(
+            listing,
+            SearchRequest(site_type=(Site.LINKEDIN,)),
+        )
+
+    assert raised.value.retryable is True
+    assert raised.value.retry_after == 2
+
+
+def test_linkedin_targeted_detail_requires_a_canonical_job_identity() -> None:
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    listing = JobPost(
+        id="provider-opaque",
+        title="Staff Platform Engineer",
+        job_url="https://www.linkedin.com/jobs/view/not-numeric",
+    )
+
+    with pytest.raises(InvalidRequestError, match="canonical numeric job id"):
+        scraper.fetch_job_detail(
+            listing,
+            SearchRequest(site_type=(Site.LINKEDIN,)),
+        )
+
+
+def test_linkedin_search_retains_the_listing_when_detail_fetch_fails() -> None:
+    cards = _linkedin_cards(42)
+
+    class Session:
+        headers: dict[str, str] = {}
+
+        def get(self, url, *, params=None, timeout=None):
+            del timeout
+            if params is not None:
+                return _Response(text=cards)
+            return _Response(status_code=429, headers={"Retry-After": "2"})
+
+    request = SearchRequest(
+        site_type=(Site.LINKEDIN,),
+        linkedin_fetch_description=True,
+        results_wanted=1,
+        max_pages=1,
+    )
+    scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
+    scraper.session = Session()
+
+    response = scraper.scrape(request)
+
+    assert [job.id for job in response.jobs] == ["li-42"]
+    assert response.jobs[0].description is None
 
 
 def test_glassdoor_offline_fixture_preserves_direct_salary_and_filters(

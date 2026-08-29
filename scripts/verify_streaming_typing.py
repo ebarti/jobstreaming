@@ -17,6 +17,10 @@ def stream(request: jobstreaming.SearchRequest) -> Iterator[jobstreaming.JobPost
     return jobstreaming.stream_jobs(request)
 
 
+def targeted_detail(job: jobstreaming.JobPost) -> jobstreaming.JobPost | None:
+    return jobstreaming.fetch_job_detail(jobstreaming.Site.LINKEDIN, job)
+
+
 def batch_api_remains_visible() -> object:
     return jobstreaming.scrape_jobs(
         site_name=jobstreaming.Site.GOOGLE,
