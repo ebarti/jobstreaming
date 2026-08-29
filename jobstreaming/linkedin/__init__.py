@@ -8,8 +8,14 @@ from urllib.parse import unquote, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
+from requests import exceptions as requests_exceptions
 
-from jobstreaming.exception import error_for_http_status
+from jobstreaming.exception import (
+    AuthenticationConfigurationError,
+    InvalidRequestError,
+    TransientNetworkError,
+    error_for_http_status,
+)
 from jobstreaming.linkedin.constant import headers
 from jobstreaming.linkedin.util import (
     is_job_remote,
@@ -34,6 +40,7 @@ from jobstreaming.model import (
     Scraper,
     ScraperInput,
     SearchFilter,
+    SearchRequest,
     Site,
 )
 from jobstreaming.runtime import ScrapeContext
@@ -383,16 +390,131 @@ class LinkedIn(Scraper):
         :param job_page_url:
         :return: dict
         """
+        request = self.scraper_input
+        if request is None:
+            return {}
+        try:
+            return self._request_job_details(job_id, request)
+        except Exception:
+            # Search remains best-effort: a detail failure must not discard the
+            # listing card. The targeted public API below preserves typed
+            # failures for callers that require detail before a decision.
+            return {}
+
+    def fetch_job_detail(
+        self,
+        job: JobPost,
+        request: SearchRequest,
+    ) -> JobPost | None:
+        """Enrich one LinkedIn listing without repeating its search query."""
+
+        if request.site_type != (Site.LINKEDIN,):
+            raise InvalidRequestError(
+                "LinkedIn targeted detail requires a LinkedIn-only request"
+            )
+        job_id = self._targeted_job_id(job)
+        details = self._request_job_details(job_id, request)
+        description = details.get("description")
+        if not isinstance(description, str) or not description.strip():
+            return None
+
+        emails = extract_emails_from_text(description)
+        updates = {
+            "description": description,
+            "emails": tuple(emails) if emails else None,
+            "is_remote": bool(job.is_remote)
+            or is_job_remote(job.title, description, job.location or Location()),
+        }
+        optional_fields = {
+            "job_type": details.get("job_type"),
+            "job_level": (details.get("job_level") or "").lower() or None,
+            "company_industry": details.get("company_industry"),
+            "job_url_direct": details.get("job_url_direct"),
+            "company_logo": details.get("company_logo"),
+            "job_function": details.get("job_function"),
+        }
+        updates.update(
+            {
+                field: value
+                for field, value in optional_fields.items()
+                if value is not None
+            }
+        )
+        return job.model_copy(update=updates)
+
+    @staticmethod
+    def _targeted_job_id(job: JobPost) -> str:
+        parsed_url = urlparse(job.job_url)
+        host = (parsed_url.hostname or "").casefold()
+        if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+            raise InvalidRequestError(
+                "LinkedIn targeted detail requires a LinkedIn job URL"
+            )
+        url_match = re.fullmatch(
+            r"/jobs/view/(?:[^/]*-)?(\d+)/?",
+            parsed_url.path,
+        )
+        url_job_id = url_match.group(1) if url_match else None
+
+        canonical_job_id = None
+        if job.id:
+            match = re.fullmatch(r"li-(\d+)", job.id.strip())
+            if match:
+                canonical_job_id = match.group(1)
+        if (
+            canonical_job_id is not None
+            and url_job_id is not None
+            and canonical_job_id != url_job_id
+        ):
+            raise InvalidRequestError(
+                "LinkedIn targeted detail job id does not match its job URL"
+            )
+        if canonical_job_id is not None:
+            return canonical_job_id
+        if url_job_id is not None:
+            return url_job_id
+        raise InvalidRequestError(
+            "LinkedIn targeted detail requires a canonical numeric job id"
+        )
+
+    def _request_job_details(
+        self,
+        job_id: str,
+        request: SearchRequest,
+    ) -> dict:
         try:
             response = self.session.get(
                 f"{self.base_url}/jobs/view/{job_id}",
-                timeout=self.scraper_input.request_timeout,
+                timeout=request.request_timeout,
             )
-            response.raise_for_status()
-        except Exception:
-            return {}
-        if "linkedin.com/signup" in response.url:
-            return {}
+        except (
+            requests_exceptions.SSLError,
+            requests_exceptions.ProxyError,
+            requests_exceptions.InvalidProxyURL,
+        ) as exc:
+            raise AuthenticationConfigurationError(
+                "LinkedIn detail transport configuration failed: "
+                f"{type(exc).__name__}"
+            ) from exc
+        except (
+            requests_exceptions.Timeout,
+            requests_exceptions.ConnectionError,
+            requests_exceptions.RetryError,
+        ) as exc:
+            raise TransientNetworkError(
+                f"LinkedIn detail request failed: {type(exc).__name__}"
+            ) from exc
+        status_code = int(getattr(response, "status_code", 200))
+        if status_code not in range(200, 400):
+            raise error_for_http_status(
+                "LinkedIn",
+                status_code,
+                retry_after=(getattr(response, "headers", {}) or {}).get("Retry-After"),
+            )
+        if "linkedin.com/signup" in str(getattr(response, "url", "")):
+            raise AuthenticationConfigurationError(
+                "LinkedIn redirected the detail request to sign-up"
+            )
 
         soup = BeautifulSoup(response.text, "html.parser")
         div_content = soup.find(
@@ -402,9 +524,9 @@ class LinkedIn(Scraper):
         if div_content is not None:
             div_content = remove_attributes(div_content)
             description = div_content.prettify(formatter="html")
-            if self.scraper_input.description_format == DescriptionFormat.MARKDOWN:
+            if request.description_format == DescriptionFormat.MARKDOWN:
                 description = markdown_converter(description)
-            elif self.scraper_input.description_format == DescriptionFormat.PLAIN:
+            elif request.description_format == DescriptionFormat.PLAIN:
                 description = plain_converter(description)
         h3_tag = soup.find(
             "h3", text=lambda text: text and "Job function" in text.strip()

@@ -48,6 +48,7 @@ Choose the interface that matches your consumer:
 | A simple iterator of normalized jobs | `stream_jobs` |
 | A typed aggregate with source identity and per-site outcomes | `collect_jobs` |
 | A Pandas DataFrame for notebooks, exports, or batch analysis | `scrape_jobs` with the `batch` extra |
+| Detail for one already-known listing, when its adapter supports it | `fetch_job_detail` |
 | Application-owned checkpoint persistence | `CheckpointStore` |
 | Replacing or extending source behavior | `AdapterRegistry` |
 
@@ -161,6 +162,28 @@ for job in stream_jobs(
 
 Use `stream_search` when you need errors, progress, source-site metadata, or explicit
 checkpoint acknowledgements.
+
+## Fetch detail for one known listing
+
+LinkedIn search can emit listing cards without downloading every description. When an
+application later needs the description for one admitted lead, it can request only
+that posting instead of repeating the search or enabling detail downloads for every
+card:
+
+```python
+from jobstreaming import Site, fetch_job_detail
+
+detailed = fetch_job_detail(Site.LINKEDIN, listing)
+if detailed is not None:
+    store_description(detailed.description)
+```
+
+`fetch_job_detail` does not start a search and does not change search checkpoints.
+LinkedIn is the first built-in adapter with this optional capability. Unsupported
+adapters raise `DetailFetchUnsupportedError`. A `None` result means the provider page
+contained no usable description; rate limits, authentication failures, and transport
+failures remain typed exceptions so the application can retry or defer its decision.
+Applications remain responsible for deciding which known listings need detail.
 
 ## Restart and delivery semantics
 

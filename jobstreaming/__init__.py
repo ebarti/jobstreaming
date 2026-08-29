@@ -1,5 +1,6 @@
 from jobstreaming.api import (
     build_search_request,
+    fetch_job_detail,
     scrape_jobs,
     stream_jobs,
     stream_search,
@@ -36,6 +37,7 @@ from jobstreaming.events import (
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
     CursorExpiredError,
+    DetailFetchUnsupportedError,
     ErrorCode,
     InvalidRequestError,
     JobStreamingError,
@@ -81,7 +83,7 @@ from jobstreaming.outcome import (
     SiteSearchSummary,
     SourcedJob,
 )
-from jobstreaming.protocols import Adapter, AdapterFactory
+from jobstreaming.protocols import Adapter, AdapterFactory, JobDetailAdapter
 from jobstreaming.registry import AdapterRegistry, default_registry, legacy_adapter
 from jobstreaming.runtime import AckMode, ScrapeContext, SearchStream, StreamDiagnostics
 from jobstreaming.testing import (
@@ -116,12 +118,14 @@ __all__ = [
     "CompensationInterval",
     "Country",
     "CursorExpiredError",
+    "DetailFetchUnsupportedError",
     "DescriptionFormat",
     "DescriptionSalaryPolicy",
     "ErrorCode",
     "ErrorEvent",
     "EventType",
     "JobEvent",
+    "JobDetailAdapter",
     "JobPost",
     "JobResponse",
     "JobStreamingError",
@@ -169,6 +173,7 @@ __all__ = [
     "build_search_request",
     "collect_jobs",
     "default_registry",
+    "fetch_job_detail",
     "legacy_adapter",
     "parse_adapter_identifier",
     "scrape_jobs",

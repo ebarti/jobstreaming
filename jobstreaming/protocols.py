@@ -6,6 +6,7 @@ from jobstreaming.context import ScrapeContext
 from jobstreaming.model import (
     AdapterCapabilities,
     AdapterIdentifier,
+    JobPost,
     JobResponse,
     SearchRequest,
 )
@@ -35,3 +36,14 @@ class AdapterFactory(Protocol):
         ca_cert: str | None = None,
         user_agent: str | None = None,
     ) -> Adapter: ...
+
+
+@runtime_checkable
+class JobDetailAdapter(Protocol):
+    """Optional adapter capability for enriching one known listing."""
+
+    def fetch_job_detail(
+        self,
+        job: JobPost,
+        request: SearchRequest,
+    ) -> JobPost | None: ...
