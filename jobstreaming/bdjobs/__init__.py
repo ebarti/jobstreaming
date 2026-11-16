@@ -15,6 +15,7 @@ from jobstreaming.bdjobs.util import (
     parse_date,
     parse_location,
 )
+from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import BDJobsException
 from jobstreaming.model import (
     AdapterCapabilities,
@@ -133,6 +134,8 @@ class BDJobs(Scraper):
                         )
 
             raw_seen += len(cards)
+            if context.should_continue and page >= scraper_input.max_pages:
+                context.mark_termination(SiteTerminationReason.PAGE_LIMIT)
             context.emit_progress(
                 {"page": page + 1, "raw_seen": raw_seen},
                 completed_units=page,
@@ -167,22 +170,26 @@ class BDJobs(Scraper):
 
         company_element = job_card.find(
             ["span", "div"],
-            class_=lambda value: value
-            and any(
-                marker
-                in " ".join(value if isinstance(value, list) else [value]).lower()
-                for marker in ("comp-name-text", "company", "org", "comp-name")
+            class_=lambda value: (
+                value
+                and any(
+                    marker
+                    in " ".join(value if isinstance(value, list) else [value]).lower()
+                    for marker in ("comp-name-text", "company", "org", "comp-name")
+                )
             ),
         )
         company_name = company_element.get_text(strip=True) if company_element else None
 
         location_element = job_card.find(
             ["span", "div"],
-            class_=lambda value: value
-            and any(
-                marker
-                in " ".join(value if isinstance(value, list) else [value]).lower()
-                for marker in ("locon-text-d", "location", "area", "locon")
+            class_=lambda value: (
+                value
+                and any(
+                    marker
+                    in " ".join(value if isinstance(value, list) else [value]).lower()
+                    for marker in ("locon-text-d", "location", "area", "locon")
+                )
             ),
         )
         location = parse_location(
@@ -191,9 +198,11 @@ class BDJobs(Scraper):
 
         published_element = job_card.find(
             ["span", "div"],
-            class_=lambda value: value
-            and "published"
-            in " ".join(value if isinstance(value, list) else [value]).lower(),
+            class_=lambda value: (
+                value
+                and "published"
+                in " ".join(value if isinstance(value, list) else [value]).lower()
+            ),
         )
         date_posted = (
             parse_date(published_element.get_text(strip=True))
@@ -236,11 +245,13 @@ class BDJobs(Scraper):
 
         content = soup.find("div", class_="jobcontent") or soup.find(
             ["div", "section"],
-            class_=lambda value: value
-            and any(
-                marker
-                in " ".join(value if isinstance(value, list) else [value]).lower()
-                for marker in ("job-description", "details", "requirements")
+            class_=lambda value: (
+                value
+                and any(
+                    marker
+                    in " ".join(value if isinstance(value, list) else [value]).lower()
+                    for marker in ("job-description", "details", "requirements")
+                )
             ),
         )
         description = None
@@ -258,9 +269,12 @@ class BDJobs(Scraper):
         job_type = None
         label = soup.find(
             ["span", "div"],
-            string=lambda value: value
-            and any(
-                marker in value.lower() for marker in ("job type", "employment type")
+            string=lambda value: (
+                value
+                and any(
+                    marker in value.lower()
+                    for marker in ("job type", "employment type")
+                )
             ),
         )
         if label:

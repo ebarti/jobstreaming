@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TypeVar, cast
@@ -13,6 +14,7 @@ from jobstreaming.events import (
     ProgressPhase,
     ProgressUnit,
     ProviderProgress,
+    SiteTerminationReason,
     freeze_state,
     thaw_state,
 )
@@ -46,11 +48,13 @@ class _AdapterMessage:
     reset_checkpoint: bool = False
     emitted_count: int = 0
     progress: ProviderProgress | None = None
+    reason: SiteTerminationReason = SiteTerminationReason.UNKNOWN
 
 
 MessageSink = Callable[[_AdapterMessage], bool]
 CancellationCallback = Callable[[], bool]
 _Result = TypeVar("_Result")
+_TERMINATION_STATE_KEY = "_jobstreaming_site_termination_v1"
 
 
 class _ThreadTracker:
@@ -185,6 +189,12 @@ class ScrapeContext:
         )
         self._state = thaw_state(freeze_state(checkpoint.state)) if checkpoint else {}
         self._seen = set(checkpoint.seen_job_keys) if checkpoint else set()
+        self._termination_reason = SiteTerminationReason.UNKNOWN
+        if request.results_wanted is None:
+            with suppress(TypeError, ValueError):
+                self._termination_reason = SiteTerminationReason(
+                    self._state.get(_TERMINATION_STATE_KEY, "unknown")
+                )
         self._lock = threading.Lock()
         self._operation_threads = operation_threads or _ThreadTracker()
 
@@ -218,7 +228,31 @@ class ScrapeContext:
 
     @property
     def should_continue(self) -> bool:
-        return not self.cancelled and self.emitted_count < self.request.results_wanted
+        with self._lock:
+            limit = self.request.results_wanted
+            return (
+                not self.cancelled
+                and self._termination_reason is SiteTerminationReason.UNKNOWN
+                and (limit is None or len(self._seen) < limit)
+            )
+
+    @property
+    def termination_reason(self) -> SiteTerminationReason:
+        """Return the known stop reason, with a reached result cap taking priority."""
+        with self._lock:
+            limit = self.request.results_wanted
+            if limit is not None and len(self._seen) >= limit:
+                return SiteTerminationReason.RESULT_LIMIT
+            return self._termination_reason
+
+    def mark_termination(self, reason: SiteTerminationReason) -> None:
+        """Record an adapter-observed stop; do not infer exhaustion from absence."""
+        if not isinstance(reason, SiteTerminationReason):
+            raise TypeError("reason must be a SiteTerminationReason")
+        with self._lock:
+            self._termination_reason = reason
+            if self.request.results_wanted is None:
+                self._state[_TERMINATION_STATE_KEY] = reason.value
 
     def wait(self, seconds: float) -> bool:
         """Wait between requests, waking immediately when the stream is closed."""
@@ -283,7 +317,10 @@ class ScrapeContext:
             if (
                 self.cancelled
                 or key in self._seen
-                or len(self._seen) >= self.request.results_wanted
+                or (
+                    self.request.results_wanted is not None
+                    and len(self._seen) >= self.request.results_wanted
+                )
             ):
                 return False
             self._seen.add(key)
@@ -323,6 +360,11 @@ class ScrapeContext:
     ) -> None:
         with self._lock:
             self._state = thaw_state(freeze_state(resume_state))
+            if (
+                self.request.results_wanted is None
+                and self._termination_reason is not SiteTerminationReason.UNKNOWN
+            ):
+                self._state[_TERMINATION_STATE_KEY] = self._termination_reason.value
             state = thaw_state(freeze_state(self._state))
             progress = ProviderProgress(
                 phase=phase,

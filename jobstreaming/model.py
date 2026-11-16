@@ -539,7 +539,7 @@ class SearchRequest(FrozenModel):
     linkedin_company_ids: tuple[int, ...] | None = None
     description_format: DescriptionFormat = DescriptionFormat.MARKDOWN
     request_timeout: float = Field(default=30, gt=0)
-    results_wanted: int = Field(default=15, ge=0)
+    results_wanted: int | None = Field(default=15, ge=0)
     hours_old: int | None = Field(default=None, ge=0)
     max_pages: int = Field(default=50, ge=1, le=1_000)
     enforce_annual_salary: bool = False

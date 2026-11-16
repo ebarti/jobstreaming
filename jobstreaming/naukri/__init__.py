@@ -7,6 +7,7 @@ import re
 from datetime import date, datetime, timedelta
 from urllib.parse import urljoin
 
+from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
     error_for_http_status,
@@ -135,8 +136,14 @@ class Naukri(Scraper):
                         "Retry-After"
                     ),
                 )
-            job_details = response.json().get("jobDetails", [])
-            if not isinstance(job_details, list) or not job_details:
+            payload = response.json()
+            job_details = (
+                payload.get("jobDetails") if isinstance(payload, dict) else None
+            )
+            if not isinstance(job_details, list):
+                break
+            if not job_details:
+                context.mark_termination(SiteTerminationReason.SOURCE_EXHAUSTED)
                 break
 
             page_raw_start = max(0, raw_seen - page_skip)
@@ -167,6 +174,11 @@ class Naukri(Scraper):
                     break
 
             raw_seen = page_raw_start + len(job_details)
+            if context.should_continue:
+                if len(job_details) < self.jobs_per_page:
+                    context.mark_termination(SiteTerminationReason.SOURCE_EXHAUSTED)
+                elif pages_fetched + 1 >= scraper_input.max_pages:
+                    context.mark_termination(SiteTerminationReason.PAGE_LIMIT)
             context.emit_progress(
                 {
                     "page": page + 1,

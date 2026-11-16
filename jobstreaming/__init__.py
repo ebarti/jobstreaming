@@ -32,6 +32,7 @@ from jobstreaming.events import (
     SearchCheckpoint,
     SearchCompleteEvent,
     SiteCompleteEvent,
+    SiteTerminationReason,
     WarningEvent,
 )
 from jobstreaming.exception import (
@@ -162,6 +163,7 @@ __all__ = [
     "SearchStream",
     "Site",
     "SiteCompleteEvent",
+    "SiteTerminationReason",
     "SiteSearchSummary",
     "SqliteCheckpointStore",
     "SourcedJob",

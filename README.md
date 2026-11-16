@@ -146,6 +146,13 @@ with stream_search(
 Each site runs in its own worker. Arrival order is intentionally unspecified: faster
 sites and faster pages yield first.
 
+`results_wanted` limits the number of unique jobs emitted per site, not the size
+of a provider request. Pass `None` to remove that emitted-job limit; `max_pages`
+and each adapter's existing source-specific guards still apply. The default is
+15, and zero emits no jobs. A consumer can independently stop the stream after
+its own durable admission budget is reached. Provider page sizes and limits are
+adapter-specific and are not inferred from the number of jobs requested.
+
 For a job-only iterator:
 
 ```python
@@ -310,7 +317,9 @@ failure.
 
 Outcome totals and `jobs_emitted` counters describe only the current invocation. On a
 resumed search, an already-completed site is reported as completed with zero newly
-emitted jobs. Cancellation is not a failed outcome: `collect_jobs` propagates
+emitted jobs. `SiteSearchSummary.reason` preserves the current invocation's
+site-completion reason, or is `None` for a failure or a site already complete in
+the incoming checkpoint. Cancellation is not a failed outcome: `collect_jobs` propagates
 `StreamCancelledError`, while its managed stream still performs the same transport
 shutdown and bounded cleanup described below.
 
@@ -397,8 +406,19 @@ The batch schema exposes flattened `salary_source`, `salary_confidence`, and
 | `ProgressEvent` | A restart boundary such as a page or cursor was completed. |
 | `WarningEvent` | A listing was skipped or a requested filter is unsupported. |
 | `ErrorEvent` | A site failed; other sites continue. |
-| `SiteCompleteEvent` | One site exhausted its work or reached its result limit. |
+| `SiteCompleteEvent` | One site stopped; `reason` explains what is known about the stop. |
 | `SearchCompleteEvent` | Every worker stopped. `completed=False` means at least one site failed. |
+
+`SiteCompleteEvent.reason` is a `SiteTerminationReason`: `source_exhausted` when
+the adapter's source response establishes the end, `result_limit` when the
+requested emitted-job cap was reached, `page_limit` when `max_pages` stopped
+traversal, `provider_limit` when an existing source-specific adapter guard was
+reached, or `unknown` when the adapter cannot establish why the source stopped.
+These reasons do not promise that a provider's published maximum is known.
+`SearchCompleteEvent.completed` is not evidence of source exhaustion. Failures
+remain `ErrorEvent`s and external cancellation raises `StreamCancelledError`.
+For durable consumers, save the reason before acknowledging the completion event;
+already-completed older checkpoints do not invent a reason on resume.
 
 `ProgressEvent.site` identifies the source. Its immutable `progress` payload is a
 client-safe `ProviderProgress` value with these fields:
@@ -525,6 +545,8 @@ with stream_search(request, checkpoint_path="search.json") as stream:
 
 Negative offsets/result counts, invalid timeouts, malformed compensation ranges, empty
 job titles/URLs, and unsupported enum values are rejected at the boundary.
+`results_wanted=None` is valid and removes only the emitted-job count cap; the
+bounded `max_pages` value remains part of the request fingerprint.
 
 ## Custom adapters
 
@@ -618,7 +640,11 @@ hyphens normalize to underscores, so the legacy `"continuation token"` value bec
 The first argument to `emit_progress()` is private checkpoint state. The keyword
 arguments are the normalized public contract. Supply `None` for an unavailable raw
 count or continuation fact, and leave `total_units` unset unless the provider returns
-an authoritative total.
+an authoritative total. When the adapter knows why it stopped, call
+`context.mark_termination(SiteTerminationReason...)` before its final progress
+event. For uncapped requests this records the terminal fact at that acknowledged
+boundary, so a restart can re-emit completion without another provider request.
+Leave the reason unknown if the response does not establish the stop condition.
 
 Register every closeable client/session with `track_transport()`, including sessions
 created lazily or inside detail-worker threads. The base `Scraper.close()` closes each

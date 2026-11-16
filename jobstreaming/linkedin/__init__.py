@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 from requests import exceptions as requests_exceptions
 
+from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
     InvalidRequestError,
@@ -158,13 +159,15 @@ class LinkedIn(Scraper):
             and start < 1000
             and pages_completed < scraper_input.max_pages
         ):
-            total_pages = min(
-                scraper_input.max_pages,
-                math.ceil(
-                    (scraper_input.results_wanted + scraper_input.offset)
-                    / self.jobs_per_page
-                ),
-            )
+            total_pages = scraper_input.max_pages
+            if scraper_input.results_wanted is not None:
+                total_pages = min(
+                    total_pages,
+                    math.ceil(
+                        (scraper_input.results_wanted + scraper_input.offset)
+                        / self.jobs_per_page
+                    ),
+                )
             log.info(f"search page: {pages_completed + 1} / {total_pages}")
             params = {
                 "keywords": scraper_input.search_term,
@@ -245,6 +248,13 @@ class LinkedIn(Scraper):
             next_start = start + len(job_cards)
             raw_seen = raw_seen + len(job_cards) if raw_seen is not None else None
             has_more = None if len(job_cards) >= self.jobs_per_page else False
+            if context.should_continue:
+                if has_more is False:
+                    context.mark_termination(SiteTerminationReason.SOURCE_EXHAUSTED)
+                elif pages_completed + 1 >= scraper_input.max_pages:
+                    context.mark_termination(SiteTerminationReason.PAGE_LIMIT)
+                elif next_start >= 1000:
+                    context.mark_termination(SiteTerminationReason.PROVIDER_LIMIT)
             context.emit_progress(
                 {
                     "start": next_start,
@@ -335,7 +345,9 @@ class LinkedIn(Scraper):
         company = (
             company_a_tag.get_text(strip=True)
             if company_a_tag
-            else company_tag.get_text(strip=True) if company_tag else None
+            else company_tag.get_text(strip=True)
+            if company_tag
+            else None
         )
 
         metadata_card = job_card.find("div", class_="base-search-card__metadata")
@@ -493,8 +505,7 @@ class LinkedIn(Scraper):
             requests_exceptions.InvalidProxyURL,
         ) as exc:
             raise AuthenticationConfigurationError(
-                "LinkedIn detail transport configuration failed: "
-                f"{type(exc).__name__}"
+                f"LinkedIn detail transport configuration failed: {type(exc).__name__}"
             ) from exc
         except (
             requests_exceptions.Timeout,

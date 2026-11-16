@@ -4,8 +4,10 @@ import math
 import os
 from datetime import datetime, timezone
 
+from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
+    IndeedException,
     error_for_http_status,
     error_for_response_message,
 )
@@ -140,9 +142,12 @@ class Indeed(Scraper):
             )
 
         while context.should_continue and page <= scraper_input.max_pages:
-            log.info(
-                f"search page: {page} / {math.ceil(scraper_input.results_wanted / self.jobs_per_page)}"
+            total_pages = (
+                math.ceil(scraper_input.results_wanted / self.jobs_per_page)
+                if scraper_input.results_wanted is not None
+                else scraper_input.max_pages
             )
+            log.info(f"search page: {page} / {total_pages}")
             page_state = {
                 "cursor": cursor,
                 "page": page,
@@ -152,6 +157,8 @@ class Indeed(Scraper):
             jobs, cursor, raw_count = self._scrape_page(cursor)
             if not jobs:
                 log.info(f"found no jobs on page: {page}")
+                if raw_count == 0 and cursor is None:
+                    context.mark_termination(SiteTerminationReason.SOURCE_EXHAUSTED)
                 break
             for job in jobs:
                 if context.already_seen(job):
@@ -164,6 +171,11 @@ class Indeed(Scraper):
                 if not context.should_continue:
                     break
             raw_seen = raw_seen + raw_count if raw_seen is not None else None
+            if context.should_continue:
+                if cursor is None:
+                    context.mark_termination(SiteTerminationReason.SOURCE_EXHAUSTED)
+                elif page >= scraper_input.max_pages:
+                    context.mark_termination(SiteTerminationReason.PAGE_LIMIT)
             context.emit_progress(
                 {
                     "cursor": cursor,
@@ -228,9 +240,18 @@ class Indeed(Scraper):
                 message,
                 cursor_active=cursor is not None,
             )
-        search_data = (data.get("data") or {}).get("jobSearch") or {}
-        jobs = search_data.get("results") or []
-        new_cursor = (search_data.get("pageInfo") or {}).get("nextCursor")
+        search_data = (data.get("data") or {}).get("jobSearch")
+        if not isinstance(search_data, dict):
+            raise IndeedException("Indeed returned an invalid search response")
+        jobs = search_data.get("results")
+        page_info = search_data.get("pageInfo")
+        if (
+            not isinstance(jobs, list)
+            or not isinstance(page_info, dict)
+            or "nextCursor" not in page_info
+        ):
+            raise IndeedException("Indeed returned incomplete pagination data")
+        new_cursor = page_info["nextCursor"]
 
         job_list: list[JobPost] = []
         for job in jobs:
@@ -240,7 +261,7 @@ class Indeed(Scraper):
                     job_list.append(processed_job)
             except Exception as exc:
                 log.warning(
-                    "Skipped malformed Indeed listing: " f"{type(exc).__name__}: {exc}"
+                    f"Skipped malformed Indeed listing: {type(exc).__name__}: {exc}"
                 )
 
         return job_list, new_cursor, len(jobs)

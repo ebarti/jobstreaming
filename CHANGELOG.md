@@ -4,6 +4,17 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
+## [0.0.6] - Unreleased
+
+### Added
+
+- An explicit uncapped emitted-result mode that retains source and page guards.
+- Typed site stop reasons, including an unknown state when exhaustion is not known.
+
+### Fixed
+
+- Adapter errors after reaching an emitted-result limit remain visible as failures.
+
 ## [0.0.5] - 2026-08-29
 
 ### Added
