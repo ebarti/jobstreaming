@@ -345,9 +345,7 @@ class LinkedIn(Scraper):
         company = (
             company_a_tag.get_text(strip=True)
             if company_a_tag
-            else company_tag.get_text(strip=True)
-            if company_tag
-            else None
+            else company_tag.get_text(strip=True) if company_tag else None
         )
 
         metadata_card = job_card.find("div", class_="base-search-card__metadata")
