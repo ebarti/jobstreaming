@@ -9,6 +9,7 @@ from jobstreaming.events import (
     SearchCompleteEvent,
     SearchEvent,
     SiteCompleteEvent,
+    SiteTerminationReason,
 )
 from jobstreaming.model import AdapterIdentifier, SearchRequest
 from jobstreaming.outcome import (
@@ -25,6 +26,7 @@ class _SiteAccumulator:
     jobs_emitted: int = 0
     failures: list[SearchFailure] = field(default_factory=list)
     completed: bool = False
+    reason: SiteTerminationReason | None = None
 
 
 class _OutcomeAccumulator:
@@ -58,9 +60,11 @@ class _OutcomeAccumulator:
             self._jobs.append(SourcedJob(site=event.site, job=event.job))
         elif isinstance(event, ErrorEvent):
             state.completed = False
+            state.reason = None
             state.failures.append(SearchFailure.from_event(event))
         elif isinstance(event, SiteCompleteEvent):
             state.completed = True
+            state.reason = event.reason
 
     def finish(self) -> SearchOutcome:
         terminal = self._terminal
@@ -73,6 +77,7 @@ class _OutcomeAccumulator:
                 jobs_emitted=self._states[site].jobs_emitted,
                 failures=tuple(self._states[site].failures),
                 completed=self._states[site].completed,
+                reason=self._states[site].reason,
             )
             for site in self._sites
         )

@@ -75,6 +75,16 @@ class ProgressUnit(str, Enum):
     PAGE = "page"
 
 
+class SiteTerminationReason(str, Enum):
+    """Why an adapter stopped, without guessing whether a source has more."""
+
+    SOURCE_EXHAUSTED = "source_exhausted"
+    RESULT_LIMIT = "result_limit"
+    PAGE_LIMIT = "page_limit"
+    PROVIDER_LIMIT = "provider_limit"
+    UNKNOWN = "unknown"
+
+
 class ProviderProgress(FrozenModel):
     """Normalized, cursor-free progress for one provider search."""
 
@@ -150,6 +160,7 @@ class SiteCompleteEvent:
     emitted_count: int
     resume_state: Mapping[str, Any]
     type: EventType = EventType.SITE_COMPLETE
+    reason: SiteTerminationReason = SiteTerminationReason.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)

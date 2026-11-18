@@ -10,8 +10,10 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
+from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
+    ZipRecruiterException,
     error_for_http_status,
 )
 from jobstreaming.model import (
@@ -163,6 +165,7 @@ class ZipRecruiter(Scraper):
                 "skipped": skipped,
                 "raw_seen": raw_seen,
             }
+            self._continuation_known = False
             jobs_on_page, next_token, skipped, raw_count = self._find_jobs_in_page(
                 scraper_input,
                 context,
@@ -173,6 +176,11 @@ class ZipRecruiter(Scraper):
             if jobs_on_page:
                 job_list.extend(jobs_on_page)
             raw_seen = raw_seen + raw_count if raw_seen is not None else None
+            if context.should_continue:
+                if next_token is None and self._continuation_known:
+                    context.mark_termination(SiteTerminationReason.SOURCE_EXHAUSTED)
+                elif next_token and page >= max_pages:
+                    context.mark_termination(SiteTerminationReason.PAGE_LIMIT)
             context.emit_progress(
                 {
                     "continue_token": next_token,
@@ -223,7 +231,12 @@ class ZipRecruiter(Scraper):
             )
 
         res_data = res.json()
-        jobs_list = res_data.get("jobs", [])
+        if not isinstance(res_data, dict) or not isinstance(res_data.get("jobs"), list):
+            raise ZipRecruiterException(
+                "ZipRecruiter returned an invalid search response"
+            )
+        self._continuation_known = "continue" in res_data
+        jobs_list = res_data["jobs"]
         next_continue_token = res_data.get("continue", None)
         candidates: list[dict] = []
         for job in jobs_list:

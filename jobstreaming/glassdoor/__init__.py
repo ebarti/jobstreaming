@@ -8,6 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
+from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
     InvalidRequestError,
@@ -156,6 +157,16 @@ class Glassdoor(Scraper):
             )
             job_list.extend(jobs)
             raw_seen = raw_seen + raw_count if raw_seen is not None else None
+            if context.should_continue:
+                if next_cursor is None:
+                    context.mark_termination(SiteTerminationReason.SOURCE_EXHAUSTED)
+                elif raw_count and pages_fetched + 1 >= page_budget:
+                    reason = (
+                        SiteTerminationReason.PAGE_LIMIT
+                        if scraper_input.max_pages <= self.max_pages
+                        else SiteTerminationReason.PROVIDER_LIMIT
+                    )
+                    context.mark_termination(reason)
             context.emit_progress(
                 {
                     "page": page + 1,

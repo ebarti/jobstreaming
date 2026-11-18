@@ -7,7 +7,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from jobstreaming.events import ErrorEvent, EventType, freeze_state
+from jobstreaming.events import (
+    ErrorEvent,
+    EventType,
+    SiteTerminationReason,
+    freeze_state,
+)
 from jobstreaming.exception import ErrorCode
 from jobstreaming.model import AdapterIdentifier, JobPost
 
@@ -83,6 +88,7 @@ class SiteSearchSummary:
     jobs_emitted: int
     failures: tuple[SearchFailure, ...]
     completed: bool
+    reason: SiteTerminationReason | None = None
 
     def __post_init__(self) -> None:
         if self.jobs_emitted < 0:
@@ -93,6 +99,8 @@ class SiteSearchSummary:
             raise ValueError("a completed site cannot also have terminal failures")
         if not self.completed and not self.failures:
             raise ValueError("an incomplete site requires a terminal failure")
+        if not self.completed and self.reason is not None:
+            raise ValueError("a failed site cannot have a completion reason")
 
     @property
     def failure_count(self) -> int:

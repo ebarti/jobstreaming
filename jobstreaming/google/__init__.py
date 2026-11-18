@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 
+from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import error_for_http_status
 from jobstreaming.google.constant import async_param, headers_initial, headers_jobs
 from jobstreaming.google.util import (
@@ -93,7 +94,11 @@ class Google(Scraper):
         page = int(state.get("page", 1))
         page_skip = int(state.get("page_skip", 0))
         raw_seen = int(state.get("raw_seen", 0))
-        result_limit = min(900, scraper_input.results_wanted)
+        result_limit = (
+            min(900, scraper_input.results_wanted)
+            if scraper_input.results_wanted is not None
+            else 900
+        )
 
         while (
             context.should_continue
@@ -126,6 +131,11 @@ class Google(Scraper):
                     emitted.append(job)
 
             raw_seen = page_raw_start + len(jobs)
+            if context.should_continue:
+                if context.emitted_count >= 900:
+                    context.mark_termination(SiteTerminationReason.PROVIDER_LIMIT)
+                elif next_cursor and jobs and page >= scraper_input.max_pages:
+                    context.mark_termination(SiteTerminationReason.PAGE_LIMIT)
             context.emit_progress(
                 {
                     "phase": "next",

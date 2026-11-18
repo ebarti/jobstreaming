@@ -5,6 +5,7 @@ from urllib.parse import quote, urljoin
 
 from bs4 import BeautifulSoup
 
+from jobstreaming.events import SiteTerminationReason
 from jobstreaming.model import (
     AdapterCapabilities,
     Country,
@@ -103,6 +104,8 @@ class BaytScraper(Scraper):
                     continue
 
             raw_seen = page_raw_start + len(job_elements)
+            if context.should_continue and page >= scraper_input.max_pages:
+                context.mark_termination(SiteTerminationReason.PAGE_LIMIT)
             context.emit_progress(
                 {"page": page + 1, "page_skip": 0, "raw_seen": raw_seen},
                 completed_units=page,

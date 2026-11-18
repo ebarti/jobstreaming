@@ -19,6 +19,8 @@ from jobstreaming import (
     SearchCompleteEvent,
     SearchRequest,
     Site,
+    SiteCompleteEvent,
+    SiteTerminationReason,
     stream_search,
 )
 from jobstreaming.glassdoor import Glassdoor
@@ -154,6 +156,31 @@ BOARDS = [
     pytest.param(Site.ZIP_RECRUITER, _ziprecruiter_factory, id="ziprecruiter"),
     pytest.param(Site.GLASSDOOR, _glassdoor_factory, id="glassdoor"),
 ]
+
+
+@pytest.mark.parametrize(
+    ("site", "build_factory", "reason"),
+    [
+        (Site.INDEED, _indeed_factory, SiteTerminationReason.SOURCE_EXHAUSTED),
+        (Site.LINKEDIN, _linkedin_factory, SiteTerminationReason.PAGE_LIMIT),
+        (Site.ZIP_RECRUITER, _ziprecruiter_factory, SiteTerminationReason.UNKNOWN),
+        (Site.GLASSDOOR, _glassdoor_factory, SiteTerminationReason.SOURCE_EXHAUSTED),
+    ],
+)
+def test_uncapped_builtin_board_reports_its_actual_stop(site, build_factory, reason):
+    registry = _registry(site, build_factory([]))
+    request = SearchRequest(
+        site_type=(site,), location="Madrid", results_wanted=None, max_pages=3
+    )
+    with stream_search(request, registry=registry, max_retries=0) as stream:
+        events = list(stream)
+    assert (
+        next(event for event in events if isinstance(event, SiteCompleteEvent)).reason
+        is reason
+    )
+    assert len([event for event in events if isinstance(event, JobEvent)]) == (
+        3 if site is Site.LINKEDIN else 2
+    )
 
 
 @pytest.mark.parametrize(("site", "build_factory"), BOARDS)

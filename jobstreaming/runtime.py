@@ -333,7 +333,7 @@ class SearchStream(Iterator[SearchEvent]):
             except _TransportCleanupError:
                 pass
             except Exception as exc:
-                message = f"{registration.site.value}: " f"{type(exc).__name__}: {exc}"
+                message = f"{registration.site.value}: {type(exc).__name__}: {exc}"
                 with self._lifecycle_lock:
                     self._cleanup_errors.append(message)
             finally:
@@ -420,13 +420,13 @@ class SearchStream(Iterator[SearchEvent]):
                 except Exception as exc:
                     if context.cancelled:
                         return
-                    if not context.should_continue:
-                        self._emit_site_complete(site, context)
-                        return
-
                     error = classify_exception(exc)
                     retries_left = self.max_retries - attempt
-                    if not error.retryable or retries_left <= 0:
+                    if (
+                        not error.retryable
+                        or retries_left <= 0
+                        or not context.should_continue
+                    ):
                         self._put_message(
                             _AdapterMessage(
                                 type=_MessageType.ERROR,
@@ -511,6 +511,7 @@ class SearchStream(Iterator[SearchEvent]):
                 site=site,
                 state=context.resume_state,
                 emitted_count=context.emitted_count,
+                reason=context.termination_reason,
             )
         )
 
@@ -712,6 +713,7 @@ class SearchStream(Iterator[SearchEvent]):
                     site=message.site,
                     emitted_count=message.emitted_count,
                     resume_state=freeze_state(message.state),
+                    reason=message.reason,
                 )
             self._remember(stream_event, resume_state=message.state)
             return stream_event
