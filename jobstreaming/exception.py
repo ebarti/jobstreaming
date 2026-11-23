@@ -13,7 +13,7 @@ MAX_RETRY_AFTER_SECONDS = 300.0
 
 
 def parse_retry_after(value: str | int | float | None) -> float | None:
-    """Parse an HTTP Retry-After value and bound coordinator sleep time."""
+    """Parse the provider's full Retry-After delay in seconds."""
 
     if value is None:
         return None
@@ -26,10 +26,10 @@ def parse_retry_after(value: str | int | float | None) -> float | None:
             return None
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=timezone.utc)
-        seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
-    if not math.isfinite(seconds):
+        return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+    if not math.isfinite(seconds) or seconds < 0:
         return None
-    return min(max(0.0, seconds), MAX_RETRY_AFTER_SECONDS)
+    return seconds
 
 
 class ErrorCode(str, Enum):

@@ -4,6 +4,20 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
+## [Unreleased]
+
+### Changed
+
+- Indeed and ZipRecruiter now require explicit selection in the default search API.
+
+### Fixed
+
+- Preserve the full provider-requested retry delay and defer automatic retry when
+  it exceeds five minutes.
+- Stop automatically retrying LinkedIn 429 responses without a usable retry delay.
+  During streaming, a rate-limited description request preserves the listing card
+  and stops further requests until the retry policy permits them.
+
 ## [0.0.6] - 2026-11-18
 
 ### Added

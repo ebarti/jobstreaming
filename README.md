@@ -113,6 +113,9 @@ adapters raise `AuthenticationConfigurationError` when `ca_cert` is supplied ins
 of silently ignoring it. Use system trust, a correctly configured proxy, or a custom
 requests-based adapter when a private CA is required.
 
+Leaving `site_name` unset includes the built-in boards other than Indeed and
+ZipRecruiter. Set `site_name` explicitly to use either of those adapters.
+
 ## Stream results immediately
 
 ```python
@@ -217,9 +220,12 @@ Checkpointing is opt-in. Pass either `checkpoint_path` or a custom `CheckpointSt
   default. Configure `max_retries` and `retry_backoff` on `stream_search` or
   `scrape_jobs`. `max_retries` means coordinator retries after the initial adapter
   attempt; adapters do not hide additional transport retries.
-- Valid `Retry-After` delta or HTTP-date values on retryable board responses are
-  honored, capped at five minutes. The selected delay is the larger of `Retry-After`
-  and exponential `retry_backoff`.
+- The automatic retry delay is the larger of `Retry-After` and exponential
+  `retry_backoff`. A provider wait longer than five minutes ends that board's
+  attempt and is preserved in the error event. A LinkedIn 429 without a usable
+  `Retry-After` also ends the attempt. If a description request returns 429
+  during streaming, the listing card is emitted before applying the same
+  retry policy.
 - The checkpoint is written through an `fsync` plus atomic file replacement.
 - Checkpoints carry an overall schema version, an opaque generation identity, a
   monotonically increasing revision within that generation, and a cursor-state schema
@@ -441,8 +447,8 @@ these provider traversal facts.
 
 `ErrorEvent.code` is a stable `ErrorCode` value. `retryable` tells an operator whether
 the same board operation can be retried, while `reset_checkpoint` tells them whether
-the board cursor should be discarded first. `retry_after` preserves a valid, bounded
-board-requested delay on a retryable terminal failure.
+the board cursor should be discarded first. `retry_after` preserves the board-requested
+delay in seconds when supplied with a retryable terminal failure.
 
 | Error code | Retry | Reset board checkpoint |
 |---|---:|---:|

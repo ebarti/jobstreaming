@@ -44,6 +44,8 @@ from jobstreaming.events import (
     thaw_state,
 )
 from jobstreaming.exception import (
+    MAX_RETRY_AFTER_SECONDS,
+    ErrorCode,
     StreamCancelledError,
     UnacknowledgedEventError,
     _TransportCleanupError,
@@ -54,6 +56,7 @@ from jobstreaming.model import (
     JobResponse,
     SearchFilter,
     SearchRequest,
+    Site,
 )
 from jobstreaming.protocols import Adapter
 from jobstreaming.registry import AdapterRegistry
@@ -422,10 +425,20 @@ class SearchStream(Iterator[SearchEvent]):
                         return
                     error = classify_exception(exc)
                     retries_left = self.max_retries - attempt
+                    retry_after = error.retry_after
+                    defer_retry = (
+                        retry_after is not None
+                        and retry_after > MAX_RETRY_AFTER_SECONDS
+                    ) or (
+                        site is Site.LINKEDIN
+                        and error.code is ErrorCode.RATE_LIMITED
+                        and retry_after is None
+                    )
                     if (
                         not error.retryable
                         or retries_left <= 0
                         or not context.should_continue
+                        or defer_retry
                     ):
                         self._put_message(
                             _AdapterMessage(
@@ -436,7 +449,7 @@ class SearchStream(Iterator[SearchEvent]):
                                 error_type=type(exc).__name__,
                                 error_code=error.code,
                                 retryable=error.retryable,
-                                retry_after=error.retry_after,
+                                retry_after=retry_after,
                                 reset_checkpoint=error.reset_checkpoint,
                                 emitted_count=context.emitted_count,
                             )
@@ -445,7 +458,7 @@ class SearchStream(Iterator[SearchEvent]):
 
                     delay = max(
                         self.retry_backoff * (2**attempt),
-                        error.retry_after or 0,
+                        retry_after or 0,
                     )
                     context.emit_warning(
                         f"{type(exc).__name__}: {exc}; retrying "

@@ -14,6 +14,7 @@ from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
     InvalidRequestError,
+    RateLimitError,
     TransientNetworkError,
     error_for_http_status,
 )
@@ -129,6 +130,7 @@ class LinkedIn(Scraper):
         :return: job_response
         """
         self.scraper_input = scraper_input
+        standalone = context is None
         context = ScrapeContext.local(self.site, scraper_input, context)
         job_list: list[JobPost] = []
         resume_state = context.resume_state
@@ -235,15 +237,26 @@ class LinkedIn(Scraper):
                     try:
                         fetch_desc = scraper_input.linkedin_fetch_description
                         job_post = self._process_job(job_card, job_id, fetch_desc)
-                        if job_post and context.emit_job(job_post, page_state):
-                            job_list.append(job_post)
-                        if not context.should_continue:
-                            break
+                    except RateLimitError:
+                        # Keep the card and let the stream handle the board's 429
+                        # before another listing or detail request is made.
+                        listing = self._process_job(job_card, job_id, False)
+                        if listing is not None and context.emit_job(
+                            listing, page_state
+                        ):
+                            job_list.append(listing)
+                        if standalone:
+                            return JobResponse(jobs=job_list)
+                        raise
                     except Exception as e:
                         context.emit_warning(
                             f"Skipped LinkedIn job {job_id}: {type(e).__name__}: {e}"
                         )
                         continue
+                    if job_post and context.emit_job(job_post, page_state):
+                        job_list.append(job_post)
+                    if not context.should_continue:
+                        break
 
             next_start = start + len(job_cards)
             raw_seen = raw_seen + len(job_cards) if raw_seen is not None else None
@@ -405,6 +418,8 @@ class LinkedIn(Scraper):
             return {}
         try:
             return self._request_job_details(job_id, request)
+        except RateLimitError:
+            raise
         except Exception:
             # Search remains best-effort: a detail failure must not discard the
             # listing card. The targeted public API below preserves typed
