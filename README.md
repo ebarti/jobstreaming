@@ -524,23 +524,37 @@ implying that it was applied.
 
 ### Connecting Lenny's Jobs
 
-Point `JOBSTREAMING_LENNYSJOBS_LISTINGS_URL` at the listing connection you use
-for this board. JobStreaming sends a GET with the supplied `query`, zero-based
-`page` and any requested `location`, `is_remote=true` and `hours_old`.
-The connection may return the board's JSON results object or its HTML listing
-page containing `__NEXT_DATA__.props.pageProps.initialJobs`. The results object
-contains `hits`, `query`, `page`, `nbPages` and optionally `nbHits`.
-The adapter makes no detail-page requests.
+Set `JOBSTREAMING_LENNYSJOBS_LISTINGS_URL` to your connection for the board's
+TrueUp search endpoint. It receives a JSON POST containing an array of
+`{"indexName":"job","params":{...}}` queries, with partner `lenny`, request
+version `2` and company preferences `public`. The adapter reads listing cards
+from `results[0].hits`, 15 per page. An HTTP 401 or 403 is reported as an
+access error. An HTTP 429 retains the provider's retry time when supplied.
 
-The returned query must match the requested query. On the board's generic
-page, the returned query is empty, so only titles or company names containing
-the literal search phrase qualify. Location falls back to matching the
-requested location within a single reported place. A connection that filters
-by location, remote status or original posting age can report the applied
-values in the result's URL-encoded `params` field, for example
-`location=Barcelona%2C+Spain&is_remote=true&hours_old=72`. Remote and age
-filters require this confirmation. The card's `updated_at` describes an edit;
-it cannot establish when the job was posted.
+The 34 exact category names displayed in the board's public [category
+picker](https://www.lennysjobs.com/) map to its `job_category_ids_all` values.
+For example, Software Engineering is `11`, Security is `138` and Product
+Management is `22`. Other role text, such as `Director of Engineering`, goes
+verbatim in `params.query`.
+
+For each requested location, the adapter first searches the
+`job_locations_combined` facet with `hitsPerPage: 0`. It reads the suggestions
+from `results[0].facetHits` and uses the exact value in the listing request.
+For Software Engineering in Barcelona, the listing filters are:
+
+```json
+[["job_category_ids_all:11"], ["job_locations_combined:🇪🇸 Barcelona, Spain"]]
+```
+
+Spain, Spain (remote) and global Remote are distinct choices. Give a city and
+country when more than one city matches. If there is no matching remote
+location for the requested geography, the adapter emits a warning and returns
+zero jobs. A checkpoint preserves the chosen location and the lookback cutoff.
+
+The board's public listing cards provide `updated_at`; `hours_old` filters
+those timestamps locally. Cards with missing update times are excluded from a
+time-limited search. Original posting dates remain unknown. Each accepted card
+links to its public job page.
 
 ## Validated request API
 

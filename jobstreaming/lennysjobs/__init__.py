@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
-from collections.abc import Iterator
 from contextlib import suppress
-from urllib.parse import parse_qs, quote
+from datetime import datetime
+from time import time
+from urllib.parse import quote
 
-from bs4 import BeautifulSoup, SoupStrainer
 from pydantic import ValidationError
 
 from jobstreaming.events import SiteTerminationReason
@@ -16,6 +15,15 @@ from jobstreaming.exception import (
     AdapterFailureError,
     AuthenticationConfigurationError,
     error_for_http_status,
+)
+from jobstreaming.lennysjobs.native import (
+    BOARD,
+    LOCATION_FACET,
+    PAGE_SIZE,
+    check_page,
+    native_request,
+    scope,
+    select_location,
 )
 from jobstreaming.model import (
     AdapterCapabilities,
@@ -36,47 +44,14 @@ from jobstreaming.model import (
 from jobstreaming.runtime import ScrapeContext
 from jobstreaming.util import create_session
 
-BOARD = "Lenny's Jobs"
 LISTINGS_URL_ENV = "JOBSTREAMING_LENNYSJOBS_LISTINGS_URL"
-
-
-def _page_payload(body: str, page: int) -> dict:
-    try:
-        if body.lstrip().startswith("<"):
-            script = BeautifulSoup(
-                body,
-                "html.parser",
-                parse_only=SoupStrainer("script", id="__NEXT_DATA__"),
-            ).find("script")
-            if script is None or script.string is None:
-                raise ValueError
-            data = json.loads(script.string)["props"]["pageProps"]["initialJobs"]
-        else:
-            data = json.loads(body)
-    except (KeyError, TypeError, ValueError):
-        raise AdapterFailureError(
-            f"{BOARD} returned an unreadable listing page"
-        ) from None
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get("hits"), list)
-        or type(data.get("page")) is not int
-        or data["page"] != page
-        or type(data.get("nbPages")) is not int
-        or data["nbPages"] < 0
-        or not isinstance(data.get("query"), str)
-    ):
-        raise AdapterFailureError(
-            f"{BOARD} returned invalid listing or pagination metadata"
-        )
-    return data
 
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _listing(hit: dict) -> JobPost:
+def _listing(hit: dict, remote: bool) -> JobPost:
     key = _text(hit.get("job_id")) or _text(hit.get("objectID"))
     if not key or key in {".", ".."}:
         raise ValueError("missing listing identity")
@@ -101,6 +76,7 @@ def _listing(hit: dict) -> JobPost:
     location = _text(hit.get("location"))
     return JobPost(
         id=key,
+        is_remote=True if remote else None,
         job_url=f"https://www.lennysjobs.com/job/{quote(key, safe='')}",
         title=_text(hit.get("title")),
         company_name=_text(hit.get("company_name")) or None,
@@ -112,51 +88,16 @@ def _listing(hit: dict) -> JobPost:
     )
 
 
-def _matching_listings(
-    data: dict, query: str, filters: dict[str, str], context: ScrapeContext
-) -> Iterator[JobPost]:
-    query = query.casefold()
-    returned_query = data["query"].strip().casefold()
-    if returned_query and returned_query != query:
-        raise AdapterFailureError(f"{BOARD} returned results for a different query")
-    # The public landing page is a category preview. Only trust filters that
-    # the connection reports as applied or that can be checked on each card.
-    applied = parse_qs(_text(data.get("params")))
-    for name in ("is_remote", "hours_old"):
-        if name in filters and applied.get(name) != [filters[name]]:
-            raise AdapterFailureError(
-                f"{BOARD} listing connection did not confirm the {name} filter"
-            )
-    location = filters.get("location", "")
-    requested_places = {p.strip().casefold() for p in location.split(",") if p.strip()}
-    check_location = bool(requested_places) and applied.get("location") != [location]
-    for hit in data["hits"]:
-        if not context.should_continue:
-            return
-        try:
-            if not isinstance(hit, dict):
-                raise ValueError
-            job = _listing(hit)
-        except ValueError:
-            context.emit_warning(f"Skipped a malformed {BOARD} listing")
-            continue
-        if (
-            not returned_query
-            and query
-            and not any(
-                query in field.casefold()
-                for field in (job.title, job.company_name or "")
-            )
-        ):
-            continue
-        if check_location and not any(
-            requested_places.issubset(
-                part.strip().casefold() for part in place.split(",")
-            )
-            for place in _text(hit.get("location")).split(";")
-        ):
-            continue
-        yield job
+def _updated_at(hit: dict) -> float | None:
+    try:
+        date = datetime.fromisoformat(
+            _text(hit.get("updated_at")).replace("Z", "+00:00")
+        )
+        if date.tzinfo is not None:
+            return date.timestamp()
+    except (ValueError, OverflowError, OSError):
+        pass
+    return None
 
 
 class LennysJobs(Scraper):
@@ -169,7 +110,7 @@ class LennysJobs(Scraper):
                 SearchFilter.HOURS_OLD,
             }
         ),
-        resume=Resumable(granularity=ResumeGranularity.PAGE),
+        resume=Resumable(granularity=ResumeGranularity.PAGE, cursor_schema_version=2),
     )
 
     def __init__(
@@ -190,6 +131,24 @@ class LennysJobs(Scraper):
         if user_agent:
             self.session.headers["User-Agent"] = user_agent
 
+    def _search(self, payload: list[dict], timeout: float) -> dict:
+        response = self.session.post(
+            self.listings_url, json=payload, timeout=timeout, allow_redirects=False
+        )
+        if not 200 <= response.status_code < 300:
+            raise error_for_http_status(
+                BOARD,
+                response.status_code,
+                retry_after=response.headers.get("Retry-After"),
+            )
+        try:
+            results = response.json()["results"]
+            if isinstance(results, list) and results and isinstance(results[0], dict):
+                return results[0]
+        except (ValueError, KeyError, TypeError):
+            pass
+        raise AdapterFailureError(f"{BOARD} returned an unreadable search response")
+
     def scrape(
         self, scraper_input: ScraperInput, context: ScrapeContext | None = None
     ) -> JobResponse:
@@ -198,36 +157,82 @@ class LennysJobs(Scraper):
                 f"{BOARD} requires {LISTINGS_URL_ENV}"
             )
         context = ScrapeContext.local(self.site, scraper_input, context)
-        query = (scraper_input.search_term or "").strip()
-        filters: dict[str, str] = {}
-        if scraper_input.location:
-            filters["location"] = scraper_input.location
-        if scraper_input.is_remote:
-            filters["is_remote"] = "true"
-        if scraper_input.hours_old:
-            filters["hours_old"] = str(scraper_input.hours_old)
-
+        query, filters = scope((scraper_input.search_term or "").strip())
         state = context.resume_state
         page, raw_before = int(state.get("page", 0)), int(state.get("raw_before", 0))
-        jobs = []
-        while context.should_continue and page < scraper_input.max_pages:
-            response = self.session.get(
-                self.listings_url,
-                params={"query": query, "page": page, **filters},
-                timeout=scraper_input.request_timeout,
-                allow_redirects=False,
+        cutoff = state.get("updated_since")
+        if cutoff is None and scraper_input.hours_old:
+            cutoff = int(time()) - scraper_input.hours_old * 3600
+        place = (scraper_input.location or "").strip()
+        if not place and scraper_input.is_remote:
+            place = "Remote"
+        location = state.get("location_value")
+        if place and location is None and context.should_continue:
+            suggestions = self._search(
+                native_request(
+                    query,
+                    filters,
+                    page=0,
+                    hitsPerPage=0,
+                    facetName=LOCATION_FACET,
+                    facetQuery=place.split(",")[0].strip(),
+                    maxFacetHits=10,
+                ),
+                scraper_input.request_timeout,
             )
-            if not 200 <= response.status_code < 300:
-                raise error_for_http_status(
-                    BOARD,
-                    response.status_code,
-                    retry_after=response.headers.get("Retry-After"),
+            location = select_location(
+                place, bool(scraper_input.is_remote), suggestions
+            )
+            if location is None:
+                context.emit_warning(
+                    f"{BOARD} has no matching location for the requested search"
                 )
-            data = _page_payload(response.text, page)
-            for job in _matching_listings(data, query, filters, context):
-                # Replay the current page on resume; stable IDs deduplicate acknowledgements
-                # even if the provider reorders its cards.
-                if context.emit_job(job, {"page": page, "raw_before": raw_before}):
+                context.mark_termination(SiteTerminationReason.SOURCE_EXHAUSTED)
+                return JobResponse(jobs=())
+        if location:
+            filters.append([f"{LOCATION_FACET}:{location}"])
+
+        cursor = {
+            "page": page,
+            "raw_before": raw_before,
+            "location_value": location,
+            "updated_since": cutoff,
+        }
+        if context.should_continue and (location or cutoff is not None) and not state:
+            context.emit_progress(
+                cursor, completed_units=page, raw_items_seen=raw_before, has_more=True
+            )
+        jobs = []
+        warned_about_date = False
+        while context.should_continue and page < scraper_input.max_pages:
+            data = self._search(
+                native_request(query, filters, page=page, hitsPerPage=PAGE_SIZE),
+                scraper_input.request_timeout,
+            )
+            check_page(data, query, filters, page)
+            for hit in data["hits"]:
+                if not context.should_continue:
+                    break
+                try:
+                    if not isinstance(hit, dict):
+                        raise ValueError
+                    job = _listing(hit, bool(scraper_input.is_remote))
+                except ValueError:
+                    context.emit_warning(f"Skipped a malformed {BOARD} listing")
+                    continue
+                if cutoff is not None:
+                    updated = _updated_at(hit)
+                    if updated is None:
+                        if not warned_about_date:
+                            context.emit_warning(
+                                f"{BOARD} excluded listings without a usable update date from the requested time window"
+                            )
+                            warned_about_date = True
+                        continue
+                    if updated < cutoff:
+                        continue
+                # Replay an interrupted page. Stable job IDs deduplicate acknowledged cards.
+                if context.emit_job(job, cursor):
                     jobs.append(job)
             if not context.should_continue:
                 break
@@ -244,8 +249,9 @@ class LennysJobs(Scraper):
                 context.mark_termination(reason)
             elif page >= scraper_input.max_pages:
                 context.mark_termination(SiteTerminationReason.PAGE_LIMIT)
+            cursor = {**cursor, "page": page, "raw_before": raw_before}
             context.emit_progress(
-                {"page": page, "raw_before": raw_before},
+                cursor,
                 completed_units=page,
                 raw_items_seen=raw_before,
                 has_more=has_more,

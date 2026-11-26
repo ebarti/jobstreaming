@@ -4,6 +4,15 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
+## [0.0.8] - 2026-11-26
+
+### Fixed
+
+- Lenny's Jobs now sends the board's native batched search POST, with exact
+  category IDs, title queries and location facets resolved through its picker.
+  Searches verify the returned scope, keep remote geography on pagination and
+  resume, and use listing update times for lookback.
+
 ## [0.0.7] - 2026-11-26
 
 ### Added
