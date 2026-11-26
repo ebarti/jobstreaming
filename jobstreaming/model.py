@@ -434,6 +434,7 @@ class Site(str, Enum):
     BAYT = "bayt"
     NAUKRI = "naukri"
     BDJOBS = "bdjobs"
+    LENNYSJOBS = "lennysjobs"
 
     @classmethod
     def from_string(cls, value: str) -> Site:
