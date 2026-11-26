@@ -4,6 +4,13 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
+## [0.0.7] - 2026-11-26
+
+### Added
+
+- Lenny's Jobs listing ingestion through a configurable search connection, with
+  query filtering, normalized cards and resumable pagination.
+
 ## [0.0.6] - 2026-11-18
 
 ### Added

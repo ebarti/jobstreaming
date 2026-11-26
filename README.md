@@ -515,11 +515,32 @@ except StreamCancelledError:
 | Bayt | page | Currently supports keyword search and international results. |
 | Naukri | page | Requires `JOBSTREAMING_NAUKRI_NKPARAM`. India-focused. A non-empty `search_term` is required. |
 | BDJobs | page | Bangladesh-focused. Detail pages are fetched concurrently within each result page. |
+| Lenny's Jobs (`lennysjobs`) | page | Reads listing cards through an operator-configured search connection. Set `JOBSTREAMING_LENNYSJOBS_LISTINGS_URL` in the worker environment. |
 
 Adapters declare their supported filter names and, for enum filters such as
 `job_type`, supported values. If a selected adapter cannot honor a requested filter or
 value, the stream emits a `WarningEvent` and omits the parameter instead of silently
 implying that it was applied.
+
+### Connecting Lenny's Jobs
+
+Point `JOBSTREAMING_LENNYSJOBS_LISTINGS_URL` at the listing connection you use
+for this board. JobStreaming sends a GET with the supplied `query`, zero-based
+`page` and any requested `location`, `is_remote=true` and `hours_old`.
+The connection may return the board's JSON results object or its HTML listing
+page containing `__NEXT_DATA__.props.pageProps.initialJobs`. The results object
+contains `hits`, `query`, `page`, `nbPages` and optionally `nbHits`.
+The adapter makes no detail-page requests.
+
+The returned query must match the requested query. On the board's generic
+page, the returned query is empty, so only titles or company names containing
+the literal search phrase qualify. Location falls back to matching the
+requested location within a single reported place. A connection that filters
+by location, remote status or original posting age can report the applied
+values in the result's URL-encoded `params` field, for example
+`location=Barcelona%2C+Spain&is_remote=true&hours_old=72`. Remote and age
+filters require this confirmation. The card's `updated_at` describes an edit;
+it cannot establish when the job was posted.
 
 ## Validated request API
 
