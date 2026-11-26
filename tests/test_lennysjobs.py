@@ -1,5 +1,6 @@
 import json
-from urllib.parse import parse_qs, urlsplit
+from datetime import datetime, timezone
+from urllib.parse import urlencode, urlsplit
 
 import pytest
 from requests import Response, Session
@@ -16,49 +17,76 @@ from jobstreaming import (
     stream_search,
 )
 from jobstreaming.lennysjobs import LISTINGS_URL_ENV
+from jobstreaming.lennysjobs.native import CATEGORY_IDS, scope
+
+BARCELONA = "🇪🇸 Barcelona, Spain"
+REMOTE_SPAIN = "🇪🇸 Spain (remote)"
 
 
-def card(key, title, location="Barcelona, Catalonia, Spain", **fields):
+def card(key, title="Engineer", **fields):
+    return {"job_id": key, "title": title, "company_name": "Example", **fields}
+
+
+def page(request_params, hits, *, pages=1, **overrides):
+    flat = ",".join(
+        value for group in request_params.get("facetFilters", []) for value in group
+    )
     return {
-        "job_id": key,
-        "title": title,
-        "company_name": "Example",
-        "location": location,
-        **fields,
+        "results": [
+            {
+                "hits": hits,
+                "query": request_params["query"],
+                "page": request_params["page"],
+                "hitsPerPage": 15,
+                "nbPages": pages,
+                "params": (
+                    urlencode({"facetFilters": flat}) if flat else "query=Engineer"
+                ),
+                **overrides,
+            },
+            {"hits": [], "hitsPerPage": 0, "nbHits": 3000},
+        ]
     }
 
 
-def page(hits, *, number=0, pages=1, query="", **metadata):
-    return {"hits": hits, "query": query, "page": number, "nbPages": pages, **metadata}
-
-
-def html(data):
-    return (
-        '<html><script type="application/json" id="__NEXT_DATA__">'
-        + json.dumps({"props": {"pageProps": {"initialJobs": data}}})
-        + "</script></html>"
-    )
+def places(*labels):
+    return {
+        "results": [{"facetHits": [{"value": label, "count": 246} for label in labels]}]
+    }
 
 
 @pytest.fixture
 def connection(monkeypatch):
-    monkeypatch.setenv(LISTINGS_URL_ENV, "https://listings.example.test/search")
+    monkeypatch.setenv(LISTINGS_URL_ENV, "https://listings.example.test/jobs/search")
     calls = []
 
     def serve(provider):
         def send(session, request, **kwargs):
             url = urlsplit(request.url)
-            assert (request.method, url.netloc, url.path) == (
-                "GET",
+            assert (request.method, url.netloc, url.path, url.query) == (
+                "POST",
                 "listings.example.test",
-                "/search",
+                "/jobs/search",
+                "",
             )
-            query = dict(
-                (k, v[0])
-                for k, v in parse_qs(url.query, keep_blank_values=True).items()
-            )
-            calls.append(query)
-            result = provider(query)
+            assert request.headers["Content-Type"] == "application/json"
+            batch = json.loads(request.body)
+            assert len(batch) == 1 and batch[0]["indexName"] == "job"
+            params = batch[0]["params"]
+            assert {
+                k: params[k]
+                for k in (
+                    "trueupPartnerId",
+                    "trueupRequestVersion",
+                    "trueupCompanyPreferencesKey",
+                )
+            } == {
+                "trueupPartnerId": "lenny",
+                "trueupRequestVersion": 2,
+                "trueupCompanyPreferencesKey": "public",
+            }
+            calls.append(params)
+            result = provider(params)
             response = Response()
             response.status_code = 200
             if isinstance(result, tuple):
@@ -66,7 +94,6 @@ def connection(monkeypatch):
             response._content = (
                 result if isinstance(result, str) else json.dumps(result)
             ).encode()
-            response.encoding = "utf-8"
             return response
 
         monkeypatch.setattr(Session, "send", send)
@@ -87,139 +114,227 @@ def ids(events):
     return [event.job.id for event in events if isinstance(event, JobEvent)]
 
 
-def test_captured_page_shape_filters_literal_query_and_location(connection):
-    data = page(
-        [
-            card(
-                "eng",
-                "Director of Engineering",
-                salary_min=80,
-                salary_max=100,
-                salary_currency="EUR",
-                salary_period="hour",
-                employment_type="full_time",
-                updated_at="2026-01-01T00:00:00Z",
-            ),
-            card("pm", "Product Manager"),
-            card(
-                "wrong-place",
-                "Director of Engineering",
-                "Barcelona, Venezuela; Madrid, Spain",
-            ),
-            None,
-            {"job_id": "bad", "title": ""},
-        ]
-    )
-    calls = connection(lambda _: html(data))
-    events = search("Director of Engineering", location="Barcelona, Spain")
-    assert ids(events) == ["eng"]
-    job = next(event.job for event in events if isinstance(event, JobEvent))
-    assert job.job_url == "https://www.lennysjobs.com/job/eng"
-    assert job.location.display_location() == "Barcelona, Catalonia, Spain"
-    assert job.job_type[0].canonical == "fulltime"
-    assert job.compensation.currency == "EUR"
-    assert job.date_posted is None and job.description is None
-    assert sum(isinstance(event, WarningEvent) for event in events) == 2
-    assert ids(search("pROducT Manager", location="Barcelona, Spain")) == ["pm"]
-    assert ids(search("missing")) == []
-    assert calls[0] == {
-        "page": "0",
-        "query": "Director of Engineering",
-        "location": "Barcelona, Spain",
-    }
-
-
-def test_native_query_filters_and_provider_page_cap(connection):
-    def provider(params):
-        number = int(params["page"])
+def test_real_form_separates_category_location_autocomplete_and_job_hits(connection):
+    def provider(p):
+        if p["hitsPerPage"] == 0:
+            return places("🇻🇪 Barcelona, Venezuela", BARCELONA)
         return page(
-            [card(str(number), "Engineering lead", "Remote")],
-            number=number,
-            pages=2,
-            nbHits=80,
-            query=params["query"],
-            params="location=Spain&is_remote=true&hours_old=72",
+            p,
+            [
+                card(
+                    "eng",
+                    "Engineering lead",
+                    salary_min=80,
+                    salary_max=100,
+                    salary_currency="EUR",
+                    salary_period="hour",
+                    employment_type="full_time",
+                    location="Barcelona, Catalonia, Spain",
+                ),
+                None,
+                card("bad", ""),
+            ],
         )
 
     calls = connection(provider)
-    events = search(
-        "Director of Engineering", location="Spain", is_remote=True, hours_old=72
+    events = search("Software Engineering", location="Barcelona, Spain")
+    assert ids(events) == ["eng"]
+    suggest, listing = calls
+    assert suggest["query"] == listing["query"] == ""
+    assert (suggest["facetName"], suggest["facetQuery"], suggest["hitsPerPage"]) == (
+        "job_locations_combined",
+        "Barcelona",
+        0,
     )
-    assert ids(events) == ["0", "1"]
-    assert calls == [
-        {
-            "page": str(n),
-            "query": "Director of Engineering",
-            "location": "Spain",
-            "is_remote": "true",
-            "hours_old": "72",
-        }
-        for n in range(2)
+    assert suggest["facetFilters"] == [["job_category_ids_all:11"]]
+    assert listing["facetFilters"] == [
+        ["job_category_ids_all:11"],
+        [f"job_locations_combined:{BARCELONA}"],
     ]
+    assert listing["hitsPerPage"] == 15 and listing["page"] == 0
+    assert "facetName" not in listing and "location" not in listing
+    job = next(e.job for e in events if isinstance(e, JobEvent))
+    assert job.job_url == "https://www.lennysjobs.com/job/eng"
+    assert (
+        job.job_type[0].canonical == "fulltime" and job.compensation.currency == "EUR"
+    )
+    assert job.date_posted is None and job.description is None
+    assert sum(isinstance(e, WarningEvent) for e in events) == 2
+
+
+def test_picker_names_are_literal_and_a_title_stays_a_query(connection):
+    assert scope("SeCuRiTy") == ("", [["job_category_ids_all:138"]])
+    assert scope("Product Design") == ("", [["job_category_ids_all:109"]])
+    assert scope("UX & Product Design") == ("", [["job_category_ids_all:7"]])
+    assert len(CATEGORY_IDS) == len(set(CATEGORY_IDS.values()))
+    calls = connection(lambda p: page(p, [card("title", "VP of Engineering")]))
+    assert ids(search("Director of Engineering")) == ["title"]
+    assert (
+        len(calls) == 1
+        and calls[0]["query"] == "Director of Engineering"
+        and "facetFilters" not in calls[0]
+    )
+
+
+@pytest.mark.parametrize(
+    ("place", "remote", "options", "expected"),
+    [
+        ("Spain", True, ["🇪🇸 Spain", REMOTE_SPAIN], REMOTE_SPAIN),
+        ("Spain", False, ["🇪🇸 Spain", REMOTE_SPAIN], "🇪🇸 Spain"),
+        (None, True, ["🌎 Remote", REMOTE_SPAIN], "🌎 Remote"),
+        ("Barcelona", False, [BARCELONA], BARCELONA),
+    ],
+)
+def test_location_and_remote_use_exact_board_values(
+    connection, place, remote, options, expected
+):
+    calls = connection(
+        lambda p: places(*options) if "facetName" in p else page(p, [card("job")])
+    )
+    events = search("Lead", location=place, is_remote=remote)
+    assert ids(events) == ["job"]
+    assert calls[1]["facetFilters"] == [[f"job_locations_combined:{expected}"]]
+    if remote:
+        assert next(e.job for e in events if isinstance(e, JobEvent)).is_remote is True
+
+
+@pytest.mark.parametrize(
+    ("place", "remote", "options", "ambiguous"),
+    [
+        ("Barcelona", False, [BARCELONA, "🇻🇪 Barcelona, Venezuela"], True),
+        ("Barcelona, Spain", True, [BARCELONA, REMOTE_SPAIN], False),
+        ("Madrid", False, [], False),
+    ],
+)
+def test_unknown_or_ambiguous_place_never_broadens_the_listing(
+    connection, place, remote, options, ambiguous
+):
+    calls = connection(lambda p: places(*options))
+    events = search("Engineer", location=place, is_remote=remote)
+    assert len(calls) == 1 and not ids(events)
+    if ambiguous:
+        assert "more specific location" in next(
+            e.message for e in events if isinstance(e, ErrorEvent)
+        )
+    else:
+        assert (
+            next(e.reason for e in events if isinstance(e, SiteCompleteEvent))
+            == SiteTerminationReason.SOURCE_EXHAUSTED
+        )
+        assert any(isinstance(e, WarningEvent) for e in events)
+
+
+def test_update_lookback_uses_card_timestamps_and_excludes_unknown_dates(
+    connection, monkeypatch
+):
+    now = 1800000000
+    monkeypatch.setattr("jobstreaming.lennysjobs.time", lambda: now)
+
+    def stamp(seconds):
+        return datetime.fromtimestamp(now - seconds, timezone.utc).isoformat()
+
+    calls = connection(
+        lambda p: page(
+            p,
+            [
+                card("edge", updated_at=stamp(3600)),
+                card("old", updated_at=stamp(3601)),
+                card("unknown"),
+                card("bad", updated_at="yesterday"),
+                card("naive", updated_at="2026-01-01"),
+            ],
+        )
+    )
+    events = search("Engineer", hours_old=1)
+    assert ids(events) == ["edge"] and "numericFilters" not in calls[0]
+    assert next(e.job for e in events if isinstance(e, JobEvent)).date_posted is None
+    assert sum(isinstance(e, WarningEvent) for e in events) == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "location", "message"),
+    [
+        (lambda p: page(p, [], query="other"), None, "different query"),
+        (lambda p: page(p, [], page=1), None, "pagination metadata"),
+        (lambda p: places(BARCELONA), None, "pagination metadata"),
+        (lambda p: {"hits": []}, None, "unreadable search response"),
+        (lambda p: "<html>Sign in</html>", None, "unreadable search response"),
+        (
+            lambda p: {"results": [{"hits": []}]},
+            "Spain",
+            "invalid location suggestions",
+        ),
+        (
+            lambda p: page(p, [], params="facetFilters=job_category_ids_all%3A22"),
+            None,
+            "confirm the selected filters",
+        ),
+    ],
+)
+def test_wrong_scope_facet_only_and_unusable_results_fail_explicitly(
+    connection, body, location, message
+):
+    connection(body)
+    events = search("Engineer", location=location)
+    assert not ids(events) and message in next(
+        e.message for e in events if isinstance(e, ErrorEvent)
+    )
+
+
+def test_pagination_and_recovery_reuse_location_cutoff_and_processed_ids(
+    connection, monkeypatch
+):
+    instant = [1800000000]
+    monkeypatch.setattr("jobstreaming.lennysjobs.time", lambda: instant[0])
+    stamp = datetime.fromtimestamp(instant[0], timezone.utc).isoformat()
+
+    def provider(p):
+        if "facetName" in p:
+            return places(BARCELONA)
+        keys = ["one", "two"] if p["page"] == 0 else ["two", "three"]
+        return page(p, [card(k, updated_at=stamp) for k in keys], pages=2, nbHits=80)
+
+    calls = connection(provider)
+    store = MemoryCheckpointStore()
+    request = SearchRequest(
+        site_type=(Site.LENNYSJOBS,),
+        search_term="Engineer",
+        location="Barcelona, Spain",
+        hours_old=1,
+        results_wanted=None,
+    )
+    with stream_search(
+        request, checkpoint_store=store, ack_mode="explicit", max_retries=0
+    ) as stream:
+        for e in stream:
+            stream.ack(e)
+            if isinstance(e, JobEvent):
+                break
+    instant[0] += 7200
+    with stream_search(request, checkpoint_store=store, max_retries=0) as stream:
+        events = list(stream)
+    assert ids(events) == ["two", "three"]
+    assert sum("facetName" in p for p in calls) == 1
+    assert calls[-1]["page"] == 1
     assert (
         next(e.reason for e in events if isinstance(e, SiteCompleteEvent))
         == SiteTerminationReason.PROVIDER_LIMIT
     )
 
 
-@pytest.mark.parametrize(
-    ("payload", "filters", "message"),
-    [
-        (page([], query="different"), {}, "different query"),
-        (page([], number=1), {}, "pagination metadata"),
-        ("<html>Sign in</html>", {}, "unreadable listing page"),
-        ({"status": "invalid"}, {}, "pagination metadata"),
-        (page([]), {"hours_old": 24}, "hours_old filter"),
-        (page([]), {"is_remote": True}, "is_remote filter"),
-    ],
-)
-def test_unusable_or_unconfirmed_response_is_not_an_empty_success(
-    connection, payload, filters, message
+def test_missing_connection_throttling_and_access_denial_are_distinct(
+    monkeypatch, connection
 ):
-    connection(lambda _: payload)
-    events = search("Engineer", **filters)
-    assert ids(events) == []
-    assert message in next(e.message for e in events if isinstance(e, ErrorEvent))
-
-
-def test_resumes_from_last_acknowledged_card_without_losing_page_siblings(connection):
-    def provider(params):
-        number = int(params["page"])
-        return page(
-            [
-                card(key, "Engineer")
-                for key in (["one", "two"] if number == 0 else ["two", "three"])
-            ],
-            number=number,
-            pages=2,
-            query="Engineer",
-        )
-
-    connection(provider)
-    store = MemoryCheckpointStore()
-    request = SearchRequest(
-        site_type=(Site.LENNYSJOBS,), search_term="Engineer", results_wanted=None
-    )
-    with stream_search(
-        request, checkpoint_store=store, ack_mode="explicit", max_retries=0
-    ) as stream:
-        for event in stream:
-            stream.ack(event)
-            if isinstance(event, JobEvent):
-                assert event.job.id == "one"
-                break
-    with stream_search(request, checkpoint_store=store, max_retries=0) as stream:
-        assert ids(list(stream)) == ["two", "three"]
-
-
-def test_missing_connection_and_throttling_are_distinct(monkeypatch, connection):
-    calls = connection(lambda _: (429, {"Retry-After": "19"}, ""))
+    calls = connection(lambda p: (429, {"Retry-After": "19"}, ""))
     error = next(e for e in search("Engineer") if isinstance(e, ErrorEvent))
     assert error.code.value == "rate_limited" and error.retry_after == 19
+    connection(lambda p: (403, {}, ""))
+    error = next(e for e in search("Engineer") if isinstance(e, ErrorEvent))
+    assert error.code.value == "authentication_configuration" and "403" in error.message
     monkeypatch.delenv(LISTINGS_URL_ENV)
     error = next(e for e in search("Engineer") if isinstance(e, ErrorEvent))
     assert (
         error.code.value == "authentication_configuration"
         and LISTINGS_URL_ENV in error.message
     )
-    assert len(calls) == 1
+    assert len(calls) == 2
