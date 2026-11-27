@@ -355,7 +355,6 @@ def default_registry() -> AdapterRegistry:
     from jobstreaming.glassdoor import Glassdoor
     from jobstreaming.google import Google
     from jobstreaming.indeed import Indeed
-    from jobstreaming.lennysjobs import LennysJobs
     from jobstreaming.linkedin import LinkedIn
     from jobstreaming.model import Site
     from jobstreaming.naukri import Naukri
@@ -370,5 +369,4 @@ def default_registry() -> AdapterRegistry:
     registry.register(Site.BAYT, BaytScraper)
     registry.register(Site.NAUKRI, Naukri)
     registry.register(Site.BDJOBS, BDJobs)
-    registry.register(Site.LENNYSJOBS, LennysJobs)
     return registry
