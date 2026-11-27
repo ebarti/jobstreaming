@@ -107,11 +107,11 @@ ZipRecruiter also accepts optional
 requires them. Never commit these values or include them in fixtures, logs, issues, or
 checkpoint files.
 
-`ca_cert` is supported by adapters built on `requests`. Glassdoor and ZipRecruiter use
-`tls-client`, whose current Python API cannot consume a custom CA bundle; those
-adapters raise `AuthenticationConfigurationError` when `ca_cert` is supplied instead
-of silently ignoring it. Use system trust, a correctly configured proxy, or a custom
-requests-based adapter when a private CA is required.
+Built-in adapters use `httpcloak` and verify certificates using the system trust
+store. When a private CA is required, add it to the runner's trust store and omit
+`ca_cert`. Passing `ca_cert` to a built-in adapter raises
+`AuthenticationConfigurationError`. Custom adapter factories still receive `ca_cert`
+and control how they establish trust.
 
 ## Stream results immediately
 

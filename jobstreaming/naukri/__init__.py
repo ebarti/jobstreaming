@@ -82,7 +82,6 @@ class Naukri(Scraper):
             create_session(
                 proxies=self.proxies,
                 ca_cert=ca_cert,
-                is_tls=False,
                 clear_cookies=True,
             )
         )

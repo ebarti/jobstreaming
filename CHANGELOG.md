@@ -1,10 +1,15 @@
 # Changelog
 
 All notable changes to JobStreaming are documented here. The project follows semantic
-versioning where practical during its `0.0.x` alpha series; adapter compatibility can
+versioning where practical during its `0.x` alpha series. Adapter compatibility can
 still change when upstream boards drift.
 
-## [0.0.9.dev0] - Unreleased
+## [0.1.0] - 2026-11-27
+
+### Changed
+
+- All built-in adapters share one `httpcloak` transport. Built-in requests verify
+  certificates using system trust. Install private CAs in the runner's trust store.
 
 ### Removed
 

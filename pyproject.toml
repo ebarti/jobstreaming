@@ -4,17 +4,16 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "jobstreaming"
-version = "0.0.9.dev0"
+version = "0.1.0"
 description = "Stream normalized jobs from multiple boards with typed events and durable checkpoints"
 authors = [{ name = "JobStreaming contributors" }]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
 dependencies = [
-    "requests>=2.31.0,<3.0.0",
+    "httpcloak>=1.7.4,<1.8.0",
     "beautifulsoup4>=4.12.2,<5.0.0",
     "pydantic>=2.14.1,<3.0.0",
-    "tls-client>=1.0.1,<2.0.0",
     "markdownify>=1.1.0,<2.0.0",
 ]
 keywords = [

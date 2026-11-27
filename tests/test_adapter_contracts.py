@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
+from httpcloak import HTTPCloakError
 from pydantic import ValidationError
-from requests import exceptions as requests_exceptions
 
 from jobstreaming import (
     AdapterCapabilities,
@@ -567,75 +567,73 @@ def test_linkedin_targeted_detail_rejects_a_non_linkedin_job_url() -> None:
 @pytest.mark.parametrize(
     "failure",
     [
-        requests_exceptions.Timeout("timed out"),
-        requests_exceptions.ConnectionError("connection failed"),
-        requests_exceptions.RetryError("retries exhausted"),
+        HTTPCloakError("i/o timeout"),
+        HTTPCloakError("dial tcp: connection refused"),
+        HTTPCloakError("read tcp: connection reset by peer"),
     ],
-    ids=("timeout", "connection", "retry"),
+    ids=("timeout", "connection", "reset"),
 )
 def test_linkedin_targeted_detail_translates_retryable_transport_failures(
     failure: Exception,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class Session:
-        headers: dict[str, str] = {}
-
-        def get(self, url, *, timeout):
-            del url, timeout
-            raise failure
+    def fail(*args, **kwargs):
+        raise failure
 
     scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
-    scraper.session = Session()
+    monkeypatch.setattr(scraper.session._session, "request", fail)
     listing = JobPost(
         id="li-42",
         title="Staff Platform Engineer",
         job_url="https://www.linkedin.com/jobs/view/42",
     )
 
-    with pytest.raises(TransientNetworkError) as raised:
-        scraper.fetch_job_detail(
-            listing,
-            SearchRequest(site_type=(Site.LINKEDIN,)),
-        )
+    try:
+        with pytest.raises(TransientNetworkError) as raised:
+            scraper.fetch_job_detail(
+                listing,
+                SearchRequest(site_type=(Site.LINKEDIN,)),
+            )
+    finally:
+        scraper.close()
 
     assert raised.value.retryable is True
-    assert type(failure).__name__ in str(raised.value)
 
 
 @pytest.mark.parametrize(
     "failure",
     [
-        requests_exceptions.SSLError("certificate failed"),
-        requests_exceptions.ProxyError("proxy failed"),
-        requests_exceptions.InvalidProxyURL("invalid proxy"),
+        HTTPCloakError("x509: certificate signed by unknown authority"),
+        HTTPCloakError("proxyconnect tcp: dial tcp: connection refused"),
+        HTTPCloakError("invalid proxy URL"),
     ],
     ids=("tls", "proxy", "invalid-proxy"),
 )
 def test_linkedin_targeted_detail_translates_transport_configuration_failures(
     failure: Exception,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class Session:
-        headers: dict[str, str] = {}
-
-        def get(self, url, *, timeout):
-            del url, timeout
-            raise failure
+    def fail(*args, **kwargs):
+        raise failure
 
     scraper = LinkedIn(user_agent="jobstreaming-offline-contract")
-    scraper.session = Session()
+    monkeypatch.setattr(scraper.session._session, "request", fail)
     listing = JobPost(
         id="li-42",
         title="Staff Platform Engineer",
         job_url="https://www.linkedin.com/jobs/view/42",
     )
 
-    with pytest.raises(AuthenticationConfigurationError) as raised:
-        scraper.fetch_job_detail(
-            listing,
-            SearchRequest(site_type=(Site.LINKEDIN,)),
-        )
+    try:
+        with pytest.raises(AuthenticationConfigurationError) as raised:
+            scraper.fetch_job_detail(
+                listing,
+                SearchRequest(site_type=(Site.LINKEDIN,)),
+            )
+    finally:
+        scraper.close()
 
     assert raised.value.retryable is False
-    assert type(failure).__name__ in str(raised.value)
 
 
 def test_linkedin_search_retains_the_listing_when_detail_fetch_fails() -> None:

@@ -6,6 +6,7 @@ from urllib.parse import quote, urljoin
 from bs4 import BeautifulSoup
 
 from jobstreaming.events import SiteTerminationReason
+from jobstreaming.exception import error_for_http_status
 from jobstreaming.model import (
     AdapterCapabilities,
     Country,
@@ -56,7 +57,7 @@ class BaytScraper(Scraper):
         self.scraper_input = scraper_input
         context = ScrapeContext.local(self.site, scraper_input, context)
         self.session = self.track_transport(
-            create_session(proxies=self.proxies, ca_cert=self.ca_cert, is_tls=False)
+            create_session(proxies=self.proxies, ca_cert=self.ca_cert)
         )
         if self.user_agent:
             self.session.headers.update({"user-agent": self.user_agent})
@@ -131,7 +132,12 @@ class BaytScraper(Scraper):
         encoded_query = quote((query or "").strip(), safe="")
         url = f"{self.base_url}/en/international/jobs/{encoded_query}-jobs/?page={page}"
         response = self.session.get(url, timeout=self.scraper_input.request_timeout)
-        response.raise_for_status()
+        if not response.ok:
+            raise error_for_http_status(
+                "Bayt",
+                response.status_code,
+                retry_after=response.headers.get("Retry-After"),
+            )
         soup = BeautifulSoup(response.text, "html.parser")
         job_listings = soup.find_all("li", attrs={"data-js-job": ""})
         log.debug(f"Found {len(job_listings)} job listing elements")
