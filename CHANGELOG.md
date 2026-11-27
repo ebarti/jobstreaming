@@ -4,6 +4,13 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
+## [0.0.9.dev0] - Unreleased
+
+### Removed
+
+- Removed the built-in Lenny's Jobs adapter. Remove `lennysjobs` from saved
+  searches before running them with the default registry.
+
 ## [0.0.8] - 2026-11-26
 
 ### Fixed

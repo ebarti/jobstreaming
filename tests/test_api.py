@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jobstreaming import (
+    AdapterId,
     AdapterRegistry,
     Compensation,
     CompensationInterval,
@@ -11,11 +12,14 @@ from jobstreaming import (
     JobResponse,
     Scraper,
     SearchFailedError,
+    SearchRequest,
     Site,
     build_search_request,
+    default_registry,
     fetch_job_detail,
     scrape_jobs,
     stream_jobs,
+    stream_search,
 )
 from jobstreaming.util import desired_order
 
@@ -110,6 +114,21 @@ def test_request_builder_copies_caller_owned_collections() -> None:
     company_ids.append(3)
 
     assert request.linkedin_company_ids == (1, 2)
+
+
+def test_default_searches_include_the_registered_boards() -> None:
+    sites = set(build_search_request().sites)
+
+    assert sites == set(default_registry().sites)
+    assert "lennysjobs" not in sites
+
+
+def test_saved_search_for_retired_board_reports_unregistered_adapter() -> None:
+    request = SearchRequest.model_validate_json('{"site_type":["lennysjobs"]}')
+
+    assert request.sites == (AdapterId("lennysjobs"),)
+    with pytest.raises(ValueError, match="No adapter registered for lennysjobs"):
+        stream_search(request)
 
 
 def test_targeted_detail_api_uses_the_selected_adapter_and_closes_it() -> None:
