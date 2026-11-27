@@ -58,7 +58,9 @@ def _parse_sites(
     ),
 ) -> tuple[AdapterIdentifier, ...]:
     if site_name is None:
-        return tuple(Site)
+        return tuple(
+            site for site in Site if site not in {Site.INDEED, Site.ZIP_RECRUITER}
+        )
     raw_sites = site_name if isinstance(site_name, (list, tuple)) else (site_name,)
     return tuple(parse_adapter_identifier(site) for site in raw_sites)
 

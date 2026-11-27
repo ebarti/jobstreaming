@@ -10,16 +10,21 @@ from requests import exceptions as requests_exceptions
 from jobstreaming import (
     AdapterCapabilities,
     AdapterCheckpoint,
+    AdapterRegistry,
     AdapterTestKit,
     CompensationInterval,
     Country,
     DescriptionFormat,
+    ErrorCode,
+    ErrorEvent,
+    JobEvent,
     JobPost,
     JobType,
     ScrapeContext,
     SearchRequest,
     Site,
     default_registry,
+    stream_search,
 )
 from jobstreaming.bdjobs import BDJobs
 from jobstreaming.exception import (
@@ -421,6 +426,89 @@ def test_linkedin_skips_detail_requests_for_resumed_and_same_run_identities(
 
     assert detail_requests == ["2", "3"]
     assert [job.id for job in response.jobs] == ["li-2", "li-3"]
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected_steps", "reported_delay"),
+    [
+        (None, ["request"], None),
+        ("invalid", ["request"], None),
+        ("601", ["request"], 601),
+        ("7", ["request", 7, "request"], 7),
+    ],
+)
+def test_linkedin_listing_429_retries_only_with_a_short_provider_delay(
+    monkeypatch: pytest.MonkeyPatch,
+    retry_after: str | None,
+    expected_steps: list[str | float],
+    reported_delay: float | None,
+) -> None:
+    steps: list[str | float] = []
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+
+    class Session:
+        def get(self, url, *, params, timeout):
+            del url, params, timeout
+            steps.append("request")
+            return _Response(status_code=429, headers=headers)
+
+    def wait(context: ScrapeContext, seconds: float) -> bool:
+        steps.append(seconds)
+        return context.should_continue
+
+    def linkedin(**kwargs) -> LinkedIn:
+        scraper = LinkedIn(**kwargs)
+        scraper.session = Session()
+        return scraper
+
+    monkeypatch.setattr(ScrapeContext, "wait", wait)
+    registry = AdapterRegistry()
+    registry.register(Site.LINKEDIN, linkedin)
+    events = list(
+        stream_search(
+            SearchRequest(site_type=(Site.LINKEDIN,)),
+            registry=registry,
+            max_retries=1,
+        )
+    )
+
+    assert steps == expected_steps
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code is ErrorCode.RATE_LIMITED
+    assert error.retryable
+    assert error.retry_after == reported_delay
+
+
+def test_linkedin_stream_preserves_listing_and_stops_detail_requests_after_429() -> (
+    None
+):
+    requested_paths: list[str] = []
+
+    class Session:
+        def get(self, url, *, params=None, timeout):
+            del timeout
+            if params is not None:
+                requested_paths.append("search")
+                return _Response(text=_linkedin_cards(1, 2, 3))
+            requested_paths.append(url.rsplit("/", 1)[-1])
+            return _Response(status_code=429)
+
+    def linkedin(**kwargs) -> LinkedIn:
+        scraper = LinkedIn(**kwargs)
+        scraper.session = Session()
+        return scraper
+
+    registry = AdapterRegistry()
+    registry.register(Site.LINKEDIN, linkedin)
+    request = SearchRequest(site_type=(Site.LINKEDIN,), linkedin_fetch_description=True)
+    events = list(stream_search(request, registry=registry, max_retries=0))
+
+    assert requested_paths == ["search", "1"]
+    jobs = [event.job for event in events if isinstance(event, JobEvent)]
+    assert [job.id for job in jobs] == ["li-1"]
+    assert jobs[0].description is None
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code is ErrorCode.RATE_LIMITED
 
 
 def test_linkedin_targeted_detail_enriches_one_existing_listing() -> None:

@@ -116,10 +116,10 @@ def test_request_builder_copies_caller_owned_collections() -> None:
     assert request.linkedin_company_ids == (1, 2)
 
 
-def test_default_searches_include_the_registered_boards() -> None:
+def test_default_searches_include_registered_boards_except_opt_in_boards() -> None:
     sites = set(build_search_request().sites)
 
-    assert sites == set(default_registry().sites)
+    assert sites == set(default_registry().sites) - {Site.INDEED, Site.ZIP_RECRUITER}
     assert "lennysjobs" not in sites
 
 

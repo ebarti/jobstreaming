@@ -24,6 +24,7 @@ from jobstreaming import (
     SiteCompleteEvent,
     StreamCancelledError,
     WarningEvent,
+    build_search_request,
     stream_search,
 )
 from jobstreaming.exception import classify_exception, error_for_http_status
@@ -53,6 +54,15 @@ def _job(site: Site, identifier: str) -> JobPost:
         title=f"Job {identifier}",
         job_url=f"https://example.test/{site.value}/{identifier}",
     )
+
+
+def test_default_search_requires_opt_in_for_indeed_and_ziprecruiter() -> None:
+    default = build_search_request()
+    assert Site.LINKEDIN in default.site_type
+    assert Site.INDEED not in default.site_type
+    assert Site.ZIP_RECRUITER not in default.site_type
+    explicit = build_search_request(site_name=["indeed", "zip_recruiter"])
+    assert explicit.site_type == (Site.INDEED, Site.ZIP_RECRUITER)
 
 
 def test_one_shot_cancellation_callback_is_latched() -> None:
