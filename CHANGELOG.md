@@ -4,7 +4,7 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
-## [Unreleased]
+## [0.0.9.dev0] - Unreleased
 
 ### Removed
 
