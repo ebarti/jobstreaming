@@ -83,7 +83,6 @@ class Google(Scraper):
             create_session(
                 proxies=self.proxies,
                 ca_cert=self.ca_cert,
-                is_tls=False,
             )
         )
 

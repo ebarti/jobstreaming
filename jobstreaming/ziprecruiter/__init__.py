@@ -6,7 +6,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -89,7 +89,7 @@ class ZipRecruiter(Scraper):
 
         self.scraper_input = None
         self.session = self.track_transport(
-            create_session(proxies=proxies, ca_cert=ca_cert)
+            create_session(proxies=proxies, ca_cert=ca_cert, allow_redirects=False)
         )
         self.authorization = authorization or os.getenv(
             "JOBSTREAMING_ZIPRECRUITER_AUTHORIZATION"
@@ -220,7 +220,7 @@ class ZipRecruiter(Scraper):
         res = self.session.get(
             f"{self.api_url}/jobs-app/jobs",
             params=params,
-            timeout_seconds=scraper_input.request_timeout,
+            timeout=scraper_input.request_timeout,
         )
         if res.status_code not in range(200, 400):
             raise error_for_http_status(
@@ -365,7 +365,7 @@ class ZipRecruiter(Scraper):
             res = session.get(
                 job_url,
                 allow_redirects=True,
-                timeout_seconds=self.scraper_input.request_timeout,
+                timeout=self.scraper_input.request_timeout,
             )
         except Exception:
             return None, None
@@ -411,15 +411,18 @@ class ZipRecruiter(Scraper):
         url = f"{self.api_url}/jobs-app/event"
         self.session.post(
             url,
-            data=get_cookie_data,
-            timeout_seconds=self.scraper_input.request_timeout,
+            data=urlencode(get_cookie_data),
+            headers={"content-type": "application/x-www-form-urlencoded"},
+            timeout=self.scraper_input.request_timeout,
         )
 
     def _get_detail_session(self):
         session = getattr(self._thread_local, "session", None)
         if session is None:
             session = self.track_transport(
-                create_session(proxies=self.proxies, ca_cert=self.ca_cert)
+                create_session(
+                    proxies=self.proxies, ca_cert=self.ca_cert, allow_redirects=False
+                )
             )
             session.headers.update(self._session_headers)
             self._thread_local.session = session

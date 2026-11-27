@@ -3,16 +3,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from itertools import cycle
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-import requests
-import tls_client
 from markdownify import markdownify as md
 
 from jobstreaming.exception import AuthenticationConfigurationError
 from jobstreaming.model import JobType, Site
 from jobstreaming.salary import annualize_compensation, infer_salary_from_text
+from jobstreaming.transport import BoardSession
 
 _JOBSTREAMING_LOG_LEVEL = logging.INFO
 
@@ -30,96 +28,24 @@ def create_logger(name: str):
     return logger
 
 
-class RotatingProxySession:
-    def __init__(self, proxies=None):
-        if isinstance(proxies, str):
-            self.proxy_cycle = cycle([self.format_proxy(proxies)])
-        elif isinstance(proxies, list):
-            self.proxy_cycle = (
-                cycle([self.format_proxy(proxy) for proxy in proxies])
-                if proxies
-                else None
-            )
-        else:
-            self.proxy_cycle = None
-
-    @staticmethod
-    def format_proxy(proxy):
-        """Utility method to format a proxy string into a dictionary."""
-        if proxy.startswith("http://") or proxy.startswith("https://"):
-            return {"http": proxy, "https": proxy}
-        if proxy.startswith("socks5://"):
-            return {"http": proxy, "https": proxy}
-        return {"http": f"http://{proxy}", "https": f"http://{proxy}"}
-
-
-class RequestsRotating(RotatingProxySession, requests.Session):
-    def __init__(self, proxies=None, clear_cookies=False):
-        RotatingProxySession.__init__(self, proxies=proxies)
-        requests.Session.__init__(self)
-        self.clear_cookies = clear_cookies
-        self.allow_redirects = True
-
-    def request(self, method, url, **kwargs):
-        if self.clear_cookies:
-            self.cookies.clear()
-
-        if self.proxy_cycle:
-            next_proxy = next(self.proxy_cycle)
-            if next_proxy["http"] != "http://localhost":
-                self.proxies = next_proxy
-            else:
-                self.proxies = {}
-        return requests.Session.request(self, method, url, **kwargs)
-
-
-class TLSRotating(RotatingProxySession, tls_client.Session):
-    def __init__(self, proxies=None):
-        RotatingProxySession.__init__(self, proxies=proxies)
-        tls_client.Session.__init__(self, random_tls_extension_order=True)
-
-    def execute_request(self, *args, **kwargs):
-        if self.proxy_cycle:
-            next_proxy = next(self.proxy_cycle)
-            if next_proxy["http"] != "http://localhost":
-                self.proxies = next_proxy
-            else:
-                self.proxies = {}
-        response = tls_client.Session.execute_request(self, *args, **kwargs)
-        response.ok = response.status_code in range(200, 400)
-        return response
-
-
 def create_session(
     *,
     proxies: list[str] | str | None = None,
     ca_cert: str | None = None,
-    is_tls: bool = True,
     clear_cookies: bool = False,
-) -> requests.Session:
-    """
-    Create a session; public retry policy is owned by the stream coordinator.
-
-    tls-client cannot consume a custom CA bundle. Reject that combination instead
-    of silently assigning an ineffective ``verify`` attribute.
-    :return: A session object
-    """
-    if is_tls and ca_cert:
+    allow_redirects: bool = True,
+) -> BoardSession:
+    """Create the shared session used by the built-in adapters."""
+    if ca_cert:
         raise AuthenticationConfigurationError(
-            "Custom CA files are not supported by tls-client adapters"
+            "Built-in adapters use the system trust store. "
+            "Add the CA to that store and omit ca_cert."
         )
-    if is_tls:
-        session = TLSRotating(proxies=proxies)
-    else:
-        session = RequestsRotating(
-            proxies=proxies,
-            clear_cookies=clear_cookies,
-        )
-
-    if ca_cert and not is_tls:
-        session.verify = ca_cert
-
-    return session
+    return BoardSession(
+        proxies=proxies,
+        clear_cookies=clear_cookies,
+        allow_redirects=allow_redirects,
+    )
 
 
 def set_logger_level(verbose: int):

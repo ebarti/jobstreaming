@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pytest
-from requests.exceptions import RetryError
 
 from jobstreaming import (
     AdapterCapabilities,
@@ -23,6 +22,7 @@ from jobstreaming import (
     Site,
     SiteCompleteEvent,
     StreamCancelledError,
+    TransientNetworkError,
     WarningEvent,
     stream_search,
 )
@@ -91,7 +91,7 @@ def test_one_shot_cancellation_callback_is_latched() -> None:
 
 
 def test_retry_exhaustion_and_retry_after_are_publicly_classified() -> None:
-    retry_error = classify_exception(RetryError("transport retries exhausted"))
+    retry_error = classify_exception(TransientNetworkError("transport timed out"))
     assert retry_error.code is ErrorCode.TRANSIENT_NETWORK
     assert retry_error.retryable is True
 
@@ -314,13 +314,9 @@ def test_ziprecruiter_parameter_edges_preserve_the_request() -> None:
     assert params["radius"] == 0
 
 
-def test_tls_adapters_reject_an_unsupported_custom_ca_file() -> None:
-    with pytest.raises(AuthenticationConfigurationError, match="tls-client"):
-        create_session(is_tls=True, ca_cert="/tmp/custom-ca.pem")
-
-    session = create_session(is_tls=False, ca_cert="/tmp/custom-ca.pem")
-    assert session.verify == "/tmp/custom-ca.pem"
-    session.close()
+def test_builtin_adapters_require_system_trust() -> None:
+    with pytest.raises(AuthenticationConfigurationError, match="system trust store"):
+        create_session(ca_cert="/tmp/custom-ca.pem")
 
 
 @pytest.mark.parametrize(

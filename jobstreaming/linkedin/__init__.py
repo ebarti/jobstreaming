@@ -8,13 +8,11 @@ from urllib.parse import unquote, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-from requests import exceptions as requests_exceptions
 
 from jobstreaming.events import SiteTerminationReason
 from jobstreaming.exception import (
     AuthenticationConfigurationError,
     InvalidRequestError,
-    TransientNetworkError,
     error_for_http_status,
 )
 from jobstreaming.linkedin.constant import headers
@@ -109,7 +107,6 @@ class LinkedIn(Scraper):
             create_session(
                 proxies=self.proxies,
                 ca_cert=ca_cert,
-                is_tls=False,
                 clear_cookies=True,
             )
         )
@@ -492,27 +489,10 @@ class LinkedIn(Scraper):
         job_id: str,
         request: SearchRequest,
     ) -> dict:
-        try:
-            response = self.session.get(
-                f"{self.base_url}/jobs/view/{job_id}",
-                timeout=request.request_timeout,
-            )
-        except (
-            requests_exceptions.SSLError,
-            requests_exceptions.ProxyError,
-            requests_exceptions.InvalidProxyURL,
-        ) as exc:
-            raise AuthenticationConfigurationError(
-                f"LinkedIn detail transport configuration failed: {type(exc).__name__}"
-            ) from exc
-        except (
-            requests_exceptions.Timeout,
-            requests_exceptions.ConnectionError,
-            requests_exceptions.RetryError,
-        ) as exc:
-            raise TransientNetworkError(
-                f"LinkedIn detail request failed: {type(exc).__name__}"
-            ) from exc
+        response = self.session.get(
+            f"{self.base_url}/jobs/view/{job_id}",
+            timeout=request.request_timeout,
+        )
         status_code = int(getattr(response, "status_code", 200))
         if status_code not in range(200, 400):
             raise error_for_http_status(

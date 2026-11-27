@@ -7,8 +7,6 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from enum import Enum
 
-from requests import exceptions as requests_exceptions
-
 MAX_RETRY_AFTER_SECONDS = 300.0
 
 
@@ -235,29 +233,23 @@ def classify_exception(exc: Exception) -> ErrorInfo:
             exc.retry_after,
         )
 
-    if isinstance(
-        exc,
-        (
-            requests_exceptions.SSLError,
-            requests_exceptions.ProxyError,
-            requests_exceptions.InvalidProxyURL,
-        ),
-    ):
+    # Third-party adapters may still report errors from their own HTTP clients.
+    legacy_names = {
+        cls.__name__
+        for cls in type(exc).__mro__
+        if cls.__module__ == "requests.exceptions"
+    }
+    if legacy_names & {"SSLError", "ProxyError", "InvalidProxyURL"}:
         return ErrorInfo(ErrorCode.AUTHENTICATION_CONFIGURATION, False, False)
 
-    if isinstance(
-        exc,
-        (
-            requests_exceptions.Timeout,
-            requests_exceptions.ConnectionError,
-            requests_exceptions.RetryError,
-        ),
-    ) or type(exc).__module__.startswith("tls_client"):
+    if legacy_names & {"Timeout", "ConnectionError", "RetryError"} or type(
+        exc
+    ).__module__.startswith("tls_client"):
         return ErrorInfo(ErrorCode.TRANSIENT_NETWORK, True, False)
 
-    if isinstance(exc, requests_exceptions.HTTPError):
-        response = exc.response
-        status_code = response.status_code if response is not None else None
+    if "HTTPError" in legacy_names:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
         if status_code is not None:
             headers = getattr(response, "headers", {}) or {}
             classified = error_for_http_status(
