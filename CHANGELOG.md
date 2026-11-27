@@ -4,7 +4,12 @@ All notable changes to JobStreaming are documented here. The project follows sem
 versioning where practical during its `0.0.x` alpha series; adapter compatibility can
 still change when upstream boards drift.
 
-## [Unreleased]
+## [0.0.9.dev0] - Unreleased
+
+### Removed
+
+- Removed the built-in Lenny's Jobs adapter. Remove `lennysjobs` from saved
+  searches before running them with the default registry.
 
 ### Changed
 
@@ -17,6 +22,22 @@ still change when upstream boards drift.
 - Stop automatically retrying LinkedIn 429 responses without a usable retry delay.
   During streaming, a rate-limited description request preserves the listing card
   and stops further requests until the retry policy permits them.
+
+## [0.0.8] - 2026-11-26
+
+### Fixed
+
+- Lenny's Jobs now sends the board's native batched search POST, with exact
+  category IDs, title queries and location facets resolved through its picker.
+  Searches verify the returned scope, keep remote geography on pagination and
+  resume, and use listing update times for lookback.
+
+## [0.0.7] - 2026-11-26
+
+### Added
+
+- Lenny's Jobs listing ingestion through a configurable search connection, with
+  query filtering, normalized cards and resumable pagination.
 
 ## [0.0.6] - 2026-11-18
 
